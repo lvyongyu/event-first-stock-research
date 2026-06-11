@@ -27,6 +27,8 @@ Outputs are written to `outputs/` as both Markdown and JSON.
 
 The Markdown report is designed for a human reader. Each candidate includes:
 
+- An AI Agent Review section that produces `Focus`, `Watch`, `Pass`, or `Blocked`
+- Agent committee summaries for News, SEC Filing, Financial, Technical, Sentiment, Debate, and Risk review
 - A deep-dive shortlist that narrows the top 10 down to 2-3 focus candidates
 - Business quality, valuation, and structural-risk scores based on SEC company facts when available
 - A `Data Confidence` rating based on SEC filing evidence and second-source price consistency
@@ -37,6 +39,31 @@ The Markdown report is designed for a human reader. Each candidate includes:
 - A transparent score breakdown
 - Source event headlines
 
+## Testing Strategy
+
+This project is built around a simple conviction: for an AI research agent, the truth lives in the full pipeline, not in isolated helper functions.
+
+That means we do not optimize for a heavy unit-test-first process. We optimize for the checks that actually prove the app still works:
+
+- Run the whole workflow end to end.
+- Verify the live public data sources still respond.
+- Inspect the generated Markdown and JSON outputs.
+- Catch broken prompts, stale assumptions, and flaky integrations early.
+
+Why this matters:
+
+- The main risk is not a pure calculation bug, it is bad research output.
+- The system depends on external news, SEC, price, and LLM behavior that changes over time.
+- Narrow unit tests can be brittle when the prompt, source mix, and ranking logic are still evolving.
+- The fastest way to lose momentum is to overbuild tests for code that is still finding its shape.
+
+So the testing doctrine here is:
+
+- Keep helpers deterministic and readable.
+- Add smoke tests where they prove the pipeline still works.
+- Trust end-to-end runs more than tiny abstractions.
+- Let the daily report itself be the primary proof that the system is healthy.
+
 ## Daily Use
 
 Run it once per trading day before the US market open:
@@ -44,6 +71,26 @@ Run it once per trading day before the US market open:
 ```bash
 python3 src/event_bottom_fishing.py --top 10
 ```
+
+By default, the agent review is deterministic and does not call an LLM. This keeps GitHub Actions reliable and avoids token spend unless explicitly enabled.
+
+To add a compact OpenAI review overlay for the highest-ranked candidates:
+
+```bash
+OPENAI_API_KEY=... python3 src/event_bottom_fishing.py \
+  --top 10 \
+  --agent-provider openai \
+  --agent-llm-count 3 \
+  --agent-token-budget 900 \
+  --agent-max-output-tokens 350
+```
+
+Token controls:
+
+- `--agent-llm-count` limits how many candidates are sent to the LLM.
+- `--agent-token-budget` caps the compact per-candidate prompt.
+- `--agent-max-output-tokens` caps response length.
+- Raw article text and full filings are not sent; prompts use compressed event, SEC, financial, technical, debate, and risk summaries.
 
 To generate the report and email it from your own machine or any SMTP-enabled environment:
 
@@ -107,6 +154,18 @@ The report also assigns `Data Confidence`:
 - `High`: SEC filing evidence is present and Yahoo/Stooq price calculations broadly agree
 - `Medium`: at least one major cross-check supports the signal
 - `Low`: the candidate relies mostly on Yahoo headlines/prices and needs manual verification before serious research
+
+The AI agent review then overlays:
+
+- News Agent: explains the event narrative and headline credibility
+- SEC Filing Agent: checks whether primary filings are present and what is still missing
+- Financial Agent: judges business quality, valuation, and structural risk
+- Technical Agent: checks stabilization and falling-knife risk
+- Sentiment Agent: currently marks social sentiment as unavailable until a real source is added
+- Debate Agent: summarizes bull and bear cases
+- Risk Agent: can downgrade or block a candidate
+
+The AI agent review is still a research workflow, not an investment recommendation.
 
 The output classes are:
 

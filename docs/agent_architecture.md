@@ -1,272 +1,487 @@
-# Multi-Agent Research Pipeline Design
+# AI Agent Research System Design
 
 ## Goal
 
-Upgrade the current event-driven bottom-fishing screener into a research pipeline that behaves more like a small investment research desk.
+Build an AI-agent-first research system for US stock bottom-fishing candidates.
 
-The system should not try to predict stock prices directly. Its value should come from:
+The current screener can still provide the initial candidate pool, but the professional version should not be a rules engine with agent names attached. The core system should be a group of AI research agents that can investigate, reason, challenge each other, and produce an auditable watchlist.
 
-- Collecting evidence from multiple sources
-- Separating source credibility from market excitement
-- Reading primary documents before trusting secondary commentary
-- Debating bull and bear cases
-- Penalizing structural risk before producing a focus list
-- Producing an auditable research note, not an opaque signal
+The system should not predict stock prices directly. Its value should come from:
 
-The output remains a research watchlist, not investment advice or an auto-trading instruction.
+- Reading primary evidence before trusting commentary
+- Comparing multiple data sources
+- Explaining why a selloff may be temporary or structural
+- Separating good businesses on sale from weak businesses getting weaker
+- Producing bull and bear cases
+- Blocking candidates with unacceptable risk
+- Creating a research note that a human can inspect
 
-## Target Architecture
+The output remains a research watchlist, not investment advice and not an automatic trade instruction.
+
+## Core Position
+
+This project should be designed as an AI agent system from the start.
+
+Rules, deterministic scores, and data loaders still matter, but they should be tools used by agents, not the main architecture.
 
 ```text
-News Agent
-SEC Filing Agent
-Financial Agent
-Reddit Agent
-Technical Agent
-      |
-      v
-Debate Agent
-      |
-      v
-Risk Agent
-      |
-      v
-Trade Agent
+AI agents decide what question to answer.
+Tools provide data and deterministic calculations.
+Guardrails constrain unsafe or low-quality conclusions.
+Reports expose the reasoning and evidence.
 ```
 
-## Agent Responsibilities
+This avoids building a fixed scoring pipeline first and later trying to retrofit autonomy into it.
 
-### News Agent
+## High-Level Architecture
 
-Purpose: detect fresh market-moving events.
+```text
+Candidate Generator
+        |
+        v
+Orchestrator Agent
+        |
+        +--> News Agent
+        +--> SEC Filing Agent
+        +--> Financial Agent
+        +--> Technical Agent
+        +--> Sentiment Agent
+        |
+        v
+Debate Agent
+        |
+        v
+Risk Agent
+        |
+        v
+Trade Review Agent
+        |
+        v
+Daily Research Report
+```
 
-Inputs:
+The candidate generator can be the existing event-driven bottom-fishing screener. It narrows the market to a manageable list, such as 10 stocks per day.
 
-- Yahoo Finance RSS in the current version
-- Future: Reuters, Benzinga, MarketWatch, company press releases
+The AI agents then perform deeper research on those candidates and reduce the list to 2-3 stocks worth serious manual review.
 
-Outputs:
+## What Makes These AI Agents
 
-- Event category
-- Event freshness
-- Headline sentiment
-- Company-specific vs macro/sector relevance
-- News consistency score
-- Duplicate/news-noise warning
+Each agent should have:
 
-Example output:
+- A mission, not just a formula
+- Access to a defined toolset
+- A structured output schema
+- Evidence requirements
+- Confidence calibration
+- Counterarguments
+- A list of missing evidence
+
+An agent should not merely produce a score. It should answer a research question.
+
+Example:
+
+```text
+Bad:
+SEC Agent returns recent filing count.
+
+Good:
+SEC Agent determines whether the selloff is supported by new primary disclosures,
+whether the issue looks temporary or structural, and what evidence is missing.
+```
+
+## Orchestrator Agent
+
+Purpose: plan and coordinate the research process for each candidate.
+
+Main question:
+
+```text
+What needs to be investigated before this stock can be classified as Focus, Watch, Pass, or Blocked?
+```
+
+Responsibilities:
+
+- Read the initial screener output
+- Identify the event thesis for each candidate
+- Assign subtasks to specialist agents
+- Decide which tools are needed
+- Track missing evidence
+- Ask for follow-up analysis when an agent result is weak or contradictory
+- Produce a complete research packet for Debate Agent
+
+Example task:
 
 ```json
 {
-  "agent": "news",
-  "stance": "mixed_positive",
-  "score": 18,
-  "confidence": 0.55,
-  "evidence": [
-    "Analyst downgrade created selloff catalyst",
-    "Positive analyst follow-up suggests debate is not one-sided"
-  ],
-  "concerns": [
-    "Some headlines are commentary rather than primary evidence"
+  "ticker": "ADBE",
+  "research_goal": "Determine whether the drawdown is an earnings reset or a structural growth concern.",
+  "required_agents": ["news", "sec_filing", "financial", "technical"],
+  "optional_agents": ["sentiment"],
+  "priority_questions": [
+    "Was the selloff caused by guidance, margins, AI disruption, or macro pressure?",
+    "Do filings or earnings materials confirm a permanent deterioration?",
+    "Is valuation now reasonable relative to growth quality?"
   ]
 }
 ```
 
-### SEC Filing Agent
+## News Agent
 
-Purpose: verify whether the event has primary-source support.
+Purpose: understand the market narrative and event catalyst.
 
-Inputs:
+Main question:
 
-- SEC company submissions
-- SEC company facts
-- Future: 8-K item extraction, 10-Q/10-K risk factor diffing
+```text
+What event caused or explains the selloff, and how credible is the narrative?
+```
 
-Outputs:
+Tools:
 
-- Recent relevant filing list
-- Primary-source confirmation
-- Red flags from filings
-- Whether the issue is temporary, cyclical, or structural
-
-Priority:
-
-SEC evidence should outrank all secondary news. If Yahoo says a company has a major issue but SEC filings do not support it, confidence should be capped.
-
-### Financial Agent
-
-Purpose: judge whether the company is worth bottom-fishing.
-
-Inputs:
-
-- SEC company facts
-- Existing price data
-- Future: quarterly statements, analyst estimates, peer comparisons
+- News RSS/search tool
+- Company press release tool
+- Source deduplication tool
+- Event classifier
 
 Outputs:
 
-- Business Quality Score
-- Valuation Score
-- Structural Risk Penalty
-- Key metrics:
-  - revenue growth
-  - net margin
-  - free-cash-flow margin
-  - liabilities/assets
-  - P/S
-  - P/E
-  - FCF yield
+- Main catalyst
+- Narrative summary
+- Source list
+- Source credibility
+- Whether coverage is independent or syndicated
+- Bullish interpretation
+- Bearish interpretation
+- Missing primary evidence
 
-This agent prevents low-quality companies from entering the focus list just because they dropped.
+Important rule:
 
-### Reddit Agent
+News can explain market reaction, but it should not prove business quality. If news claims a major structural issue, the SEC Filing Agent and Financial Agent must verify it.
 
-Purpose: measure retail sentiment and narrative intensity.
+## SEC Filing Agent
 
-Inputs:
+Purpose: read primary disclosures and determine whether the market narrative is supported by company filings.
 
-- Future: Reddit API or Pushshift-style source if available
-- Subreddits such as stocks, investing, wallstreetbets, security-specific communities
+Main question:
+
+```text
+Does primary company disclosure show temporary pressure, structural deterioration, legal risk, accounting risk, or no clear confirmation?
+```
+
+Tools:
+
+- SEC submissions API
+- SEC company facts API
+- 8-K parser
+- 10-Q / 10-K section extractor
+- Risk factor diff tool
+- Filing quote extractor
+
+Outputs:
+
+- Relevant filings
+- Filing-based thesis
+- New risks
+- Changed risk language
+- Accounting or liquidity concerns
+- Evidence quotes or evidence IDs
+- Confidence
+- Missing filings or documents
+
+This agent should carry high authority. SEC evidence should outweigh headlines, Reddit, and broad market commentary.
+
+## Financial Agent
+
+Purpose: decide whether the company is fundamentally worth researching as a bottom-fishing candidate.
+
+Main question:
+
+```text
+Is this a good or improving business whose valuation has become more interesting, or a weak business that merely got cheaper?
+```
+
+Tools:
+
+- SEC company facts tool
+- Financial metrics calculator
+- Valuation calculator
+- Peer comparison tool
+- Historical growth and margin tool
+
+Outputs:
+
+- Business quality conclusion
+- Valuation conclusion
+- Growth and margin summary
+- Balance sheet concerns
+- Structural risk view
+- Peer-relative context
+- Confidence
+- Missing financial data
+
+This agent should prevent names like low-quality cyclicals, structurally impaired businesses, or balance-sheet-stressed companies from ranking too high just because they dropped.
+
+## Technical Agent
+
+Purpose: judge timing and stabilization, not business quality.
+
+Main question:
+
+```text
+Is the stock showing signs of stabilization, or is it still a falling knife?
+```
+
+Tools:
+
+- Daily price tool
+- Volume tool
+- Relative strength tool
+- Drawdown calculator
+- Moving average and stabilization calculator
+
+Outputs:
+
+- Drawdown context
+- Short-term stabilization
+- Volume confirmation
+- Relative strength vs SPY / QQQ / sector ETF
+- Falling-knife warning
+- Timing confidence
+
+Technical evidence should affect urgency and timing. It should not turn a low-quality business into a Focus candidate.
+
+## Sentiment Agent
+
+Purpose: measure crowd narrative and retail positioning risk.
+
+Main question:
+
+```text
+Is public sentiment creating opportunity, crowding risk, or noise?
+```
+
+Tools:
+
+- Reddit ingestion tool
+- Social mention velocity tool
+- Sentiment classifier
+- Narrative clustering tool
 
 Outputs:
 
 - Mention velocity
-- Positive/negative sentiment
-- Narrative crowding
-- Meme-risk flag
-- Contrarian signal if sentiment is extremely one-sided
+- Dominant retail narratives
+- Sentiment direction
+- One-sidedness
+- Meme or crowding risk
+- Contrarian signal, if any
 
 Important rule:
 
-Reddit should have low source credibility by default. It can improve awareness of crowd behavior, but it should not override SEC or financial evidence.
-
-### Technical Agent
-
-Purpose: judge whether the setup is stabilizing or still falling.
-
-Inputs:
-
-- Daily prices
-- Volume
-- Future: intraday VWAP, relative strength, sector ETF comparison
-
-Outputs:
-
-- Drawdown
-- 5-day stabilization
-- 20-day selloff
-- Volume expansion
-- Falling-knife warning
-- Relative strength vs SPY/QQQ/sector ETF
-
-Technical evidence should influence timing, not business quality.
+Sentiment has low source credibility by default. It can flag crowd behavior, but it should not override SEC filings, financials, or clear risk evidence.
 
 ## Debate Agent
 
-Purpose: combine agent outputs into bull and bear cases.
+Purpose: force the research to confront both sides.
+
+Main question:
+
+```text
+What is the strongest bull case, what is the strongest bear case, and what evidence would change the conclusion?
+```
 
 Inputs:
 
-- All agent signals
-- Source credibility weights
-- Evidence quality score
+- All specialist agent results
+- Evidence quality scores
+- Source credibility
+- Missing evidence
 
 Outputs:
 
-- Bull case
-- Bear case
-- Disagreement summary
-- Debate score
-- Questions to verify next
+- Bull thesis
+- Bear thesis
+- Points of agreement
+- Points of disagreement
+- Key evidence
+- Open questions
+- Debate conclusion
+
+The Debate Agent should not simply average agent scores. It should identify the central disagreement.
 
 Example:
 
 ```text
 Bull case:
-- Event appears tied to guidance rather than permanent demand destruction.
+- The selloff is tied to guidance reset rather than solvency or demand collapse.
 - Business quality remains high.
-- Valuation has improved after the selloff.
+- Valuation has improved enough to justify manual research.
 
 Bear case:
-- Price has not stabilized.
-- Analyst downgrade may reflect slower structural growth.
-- Data confidence is only Medium.
+- Management commentary suggests growth durability may be weaker.
+- Technical stabilization is not yet clear.
+- Evidence quality is medium because primary documents are incomplete.
 ```
 
 ## Risk Agent
 
-Purpose: block weak or dangerous setups from becoming focus candidates.
+Purpose: protect the final shortlist from attractive-looking but dangerous setups.
 
-Inputs:
+Main question:
 
-- Debate Agent output
-- Structural Risk Penalty
-- Legal/terminal-risk events
-- Data Confidence
-- Technical falling-knife status
+```text
+Should this candidate be blocked, downgraded, or allowed into the final research shortlist?
+```
+
+Tools:
+
+- Structural risk classifier
+- Legal/regulatory risk detector
+- Balance-sheet stress checker
+- Data quality checker
+- Falling-knife checker
 
 Outputs:
 
 - Risk rating: Low / Medium / High / Blocked
-- Position-sizing suggestion for research notes only
-- Reasons a candidate cannot be Focus
+- Blocking reasons
+- Structural risk summary
+- Data quality concerns
+- Required human checks
+- Final risk gate decision
 
 Hard blocks:
 
-- bankruptcy
-- fraud/accounting irregularity
-- delisting
-- severe liquidity issue
-- high structural risk with weak business quality
-- data confidence too low for the claimed thesis
+- Bankruptcy or going-concern risk
+- Fraud or accounting irregularity
+- Delisting or severe liquidity issue
+- Major unresolved legal/regulatory risk
+- High structural risk with weak business quality
+- Evidence quality too low for the claimed thesis
 
-## Trade Agent
+Risk Agent should have veto power. A candidate can have an attractive event setup and still be blocked.
 
-Purpose: produce a final research action.
+## Trade Review Agent
 
-This should not place trades. It should classify the candidate:
+Purpose: convert the research packet into a human-readable action.
+
+This agent should not place trades.
+
+Actions:
 
 - `Focus`: worth serious manual research now
-- `Watch`: monitor, but not top priority
+- `Watch`: interesting, but not ready
 - `Pass`: not worth time this cycle
-- `Blocked`: risk/data quality makes the thesis unreliable
+- `Blocked`: risk or evidence quality invalidates the setup
 
 Outputs:
 
 - Final action
-- Trade score
 - Research rationale
-- Invalidation level or condition
+- Main bull case
+- Main bear case
+- Evidence quality
+- Risk rating
+- Invalidation conditions
 - Next verification event
 
 Example:
 
 ```text
-Action: Watch
+Action: Focus
 Reason:
-- Event is real and valuation improved.
-- Business quality is acceptable.
-- But technical stabilization is weak and data confidence is Low.
+- Selloff appears tied to a checkable earnings/guidance reset.
+- Business quality remains high.
+- Valuation is more reasonable than before the drawdown.
+- No hard risk block found.
+
+Main risk:
+- Technical stabilization is early and the next earnings call must confirm margin durability.
 ```
 
-## Dynamic Quality Multiplier
+## Agent Output Schema
 
-The quality multiplier should not be a fixed constant.
+Every agent should return structured output.
 
-It should be calculated from:
-
-```text
-Source credibility
-News quantity
-News consistency
-Primary-source confirmation
-Data freshness
-Historical source hit rate
+```json
+{
+  "agent": "sec_filing",
+  "ticker": "ADBE",
+  "task": "Determine whether recent filings support a structural risk thesis.",
+  "conclusion": "No hard structural risk found in recent filings, but growth durability needs transcript confirmation.",
+  "stance": "mixed_positive",
+  "confidence": 0.68,
+  "evidence": [
+    {
+      "source_type": "sec_filing",
+      "source": "10-Q",
+      "date": "2026-05-08",
+      "claim": "Risk language does not indicate a new liquidity or solvency issue.",
+      "credibility": 1.0
+    }
+  ],
+  "counterarguments": [
+    "Risk language around demand uncertainty expanded compared with prior filing."
+  ],
+  "missing_evidence": [
+    "Latest earnings call transcript",
+    "Management commentary on AI-related competitive pressure"
+  ],
+  "risk_flags": [],
+  "recommended_next_steps": [
+    "Run transcript analysis before promoting to Focus."
+  ]
+}
 ```
 
-### Source Credibility
+## Tool Layer
 
-Initial weights:
+Tools should be deterministic, testable functions. Agents call tools; tools should not make investment judgments.
+
+Initial tools:
+
+- `price_history_tool`
+- `news_search_tool`
+- `sec_submissions_tool`
+- `sec_company_facts_tool`
+- `filing_text_tool`
+- `financial_metrics_tool`
+- `valuation_tool`
+- `technical_indicators_tool`
+- `report_writer_tool`
+
+Later tools:
+
+- `earnings_transcript_tool`
+- `risk_factor_diff_tool`
+- `peer_comparison_tool`
+- `reddit_sentiment_tool`
+- `source_hit_rate_tool`
+- `memory_store_tool`
+
+Tool output should include:
+
+- Raw data reference
+- Timestamp
+- Source URL or source ID
+- Data freshness
+- Parsing confidence
+- Any failure or partial-data warning
+
+## Evidence Quality
+
+Evidence quality should be dynamic. It should affect confidence and final action.
+
+Inputs:
+
+- Source credibility
+- Primary-source confirmation
+- Number of independent sources
+- Consistency between sources
+- Data freshness
+- Completeness of required evidence
+- Historical source hit rate
+
+Initial source credibility:
 
 ```text
 SEC filings:          1.00
@@ -278,186 +493,185 @@ Yahoo RSS headlines:  0.45
 Reddit/social:        0.20
 ```
 
-### News Quantity
-
-More articles are not always better. The score should increase with independent corroboration, but penalize duplicate or syndicated headlines.
-
-Suggested formula:
-
-```text
-quantity_score = min(unique_company_specific_events, 5) / 5
-```
-
-### News Consistency
-
-Measure whether sources agree on direction:
-
-```text
-positive_count
-negative_count
-mixed_count
-```
-
-High consistency:
-
-- Most credible sources point in the same direction
-
-Low consistency:
-
-- Headlines are contradictory
-- Commentary conflicts with filings
-
-### Historical Hit Rate
-
-Later phase.
-
-Track whether signals from each source historically produced useful focus candidates.
-
-Example:
-
-```text
-source_hit_rate = successful_focus_outcomes / total_focus_outcomes
-```
-
-This can eventually tune credibility weights automatically.
-
-### Proposed Evidence Quality Score
+Suggested score:
 
 ```text
 evidence_quality =
-  0.40 * source_credibility
-+ 0.20 * primary_source_confirmation
-+ 0.15 * news_consistency
-+ 0.10 * unique_event_quantity
+  0.30 * source_credibility
++ 0.25 * primary_source_confirmation
++ 0.15 * source_consistency
++ 0.10 * source_independence
 + 0.10 * data_freshness
-+ 0.05 * historical_hit_rate
++ 0.10 * evidence_completeness
 ```
 
-Until historical data exists, set `historical_hit_rate = 0.5`.
+Historical hit rate can be added after enough daily outputs are stored.
 
-## Final Scoring Model
+Low evidence quality should not just reduce a numeric score. It should change the action from `Focus` to `Watch` or `Pass`.
 
-The current model should evolve from:
+## Scoring and Guardrails
+
+The AI agents should produce reasoning first. Scores should summarize the reasoning, not replace it.
+
+The system can still maintain deterministic scoring components:
+
+- Event opportunity score
+- Business quality score
+- Valuation score
+- Technical stabilization score
+- Structural risk penalty
+- Legal/regulatory risk penalty
+- Evidence quality score
+
+But final classification should be governed by:
 
 ```text
-event score + deep dive score
+agent conclusions
++ evidence quality
++ risk gate
++ deterministic scores
++ human-readable rationale
 ```
 
-to:
+Guardrails:
+
+- No Focus without a bear case
+- No Focus with high structural risk
+- No Focus with low evidence quality
+- No Focus if primary documents contradict the thesis
+- No automatic trading
+- Every report must expose evidence and uncertainty
+
+## Daily Workflow
 
 ```text
-trade_score =
-  event_opportunity_score
-+ technical_stabilization_score
-+ business_quality_score
-+ valuation_score
-+ debate_score
-- structural_risk_penalty
-- legal_terminal_risk_penalty
-- falling_knife_penalty
-
-trade_score = trade_score * evidence_quality_multiplier
+1. Candidate Generator selects top 10 event-driven bottom-fishing candidates.
+2. Orchestrator Agent creates a research plan for each candidate.
+3. Specialist agents investigate each candidate with tools.
+4. Debate Agent writes bull and bear cases.
+5. Risk Agent applies vetoes and downgrades.
+6. Trade Review Agent classifies Focus / Watch / Pass / Blocked.
+7. Report writer produces the daily email and artifacts.
 ```
 
-Where:
+Expected final report:
 
 ```text
-evidence_quality_multiplier = 0.70 + 0.60 * evidence_quality
-```
+Daily AI Research Shortlist
 
-This creates a multiplier range of `0.70` to `1.30`.
-
-Low-quality evidence dampens a candidate. High-quality corroborated evidence can lift it.
-
-## Output Design
-
-The report should start with:
-
-```text
-Daily Deep Dive Shortlist
-
-Rank | Ticker | Action | Trade Score | Evidence Quality | Risk | Main Bull Case | Main Bear Case
+Rank | Ticker | Action | Evidence Quality | Risk | Main Bull Case | Main Bear Case | Next Check
 ```
 
 Each candidate should include:
 
-```text
-Agent Committee Summary
-- News Agent
-- SEC Filing Agent
-- Financial Agent
-- Reddit Agent
-- Technical Agent
+- Agent summary
+- Key evidence
+- Debate
+- Risk gate decision
+- Final action
+- Missing evidence
+- Human follow-up checklist
 
-Debate
-- Bull case
-- Bear case
-- Open questions
+## Memory and Feedback
 
-Risk Review
-- Main risks
-- Hard blocks
-- Invalidation conditions
+The system should store past research packets.
 
-Trade Agent
-- Action
-- Trade score
-- Why Focus/Watch/Pass
-```
+Useful memory:
 
-## Implementation Plan
+- Daily candidate list
+- Agent conclusions
+- Evidence sources
+- Final action
+- Forward returns
+- Maximum drawdown after selection
+- Whether the thesis was invalidated
+- Which sources were useful
 
-### Phase 1: Internal Agent Abstraction
+This enables:
 
-No new external APIs.
+- Source hit-rate estimation
+- Agent calibration
+- Better evidence weighting
+- Detection of repeated mistakes
 
-- Add `AgentSignal`
-- Add `AgentCommittee`
-- Convert current logic into agent-style outputs:
-  - News Agent from current RSS categories
-  - SEC Agent from recent filings and company facts
-  - Financial Agent from current fundamental scoring
-  - Technical Agent from current price stats
-  - Reddit Agent as unavailable/neutral placeholder
-- Add Debate/Risk/Trade aggregation
-- Report agent table in Markdown and JSON
+Memory should not blindly reinforce prior conclusions. It should be used for calibration and auditability.
 
-### Phase 2: Better Primary Documents
+## Implementation Phases
 
-- Download and parse recent 8-K text
-- Add 10-Q/10-K risk factor diffing
-- Add earnings release detection
-- Add transcript ingestion if a reliable source is available
+### Phase 1: Agent Runtime and Schemas
 
-### Phase 3: Reddit Agent
+No new paid data sources required.
+
+- Define `AgentTask`
+- Define `AgentContext`
+- Define `AgentResult`
+- Define `Evidence`
+- Define `ToolResult`
+- Add JSON schema validation
+- Add deterministic mock mode for tests
+- Add report structure for agent outputs
+
+Goal: create the real AI-agent interface before adding complex behavior.
+
+### Phase 2: Tool Layer
+
+- Wrap current price/news/SEC/fundamental functions as tools
+- Make tool outputs structured and timestamped
+- Add source IDs and data freshness
+- Add failure handling
+- Keep tools deterministic and testable
+
+Goal: give agents reliable tools without mixing tool code with reasoning.
+
+### Phase 3: First AI-Agent Workflow
+
+- Use the existing screener to select 10 candidates
+- Run Orchestrator Agent
+- Run News, SEC Filing, Financial, Technical agents
+- Run Debate Agent
+- Run Risk Agent
+- Run Trade Review Agent
+- Produce 2-3 Focus/Watch candidates
+
+Goal: make the daily report agent-driven while keeping scope controlled.
+
+### Phase 4: Primary Document Depth
+
+- Add 8-K text extraction
+- Add 10-Q/10-K section extraction
+- Add risk factor diffing
+- Add earnings transcript ingestion if a reliable source is available
+
+Goal: make SEC and transcript analysis the highest-value part of the system.
+
+### Phase 5: Sentiment and Reddit
 
 - Add Reddit ingestion
-- Score mention velocity and sentiment
-- Add meme/crowding risk
-- Keep Reddit low credibility unless backtested
+- Add mention velocity
+- Add narrative clustering
+- Add one-sided sentiment risk
+- Keep low source credibility until backtested
 
-### Phase 4: Backtesting and Historical Hit Rate
+Goal: understand crowd behavior without letting it dominate the thesis.
 
-- Store daily outputs
-- Track forward returns and drawdowns
-- Learn source hit rates
-- Tune evidence quality weights
+### Phase 6: Memory and Calibration
 
-### Phase 5: Trade Workflow
+- Store daily research packets
+- Track forward outcomes
+- Estimate source hit rates
+- Calibrate confidence
+- Identify repeated false-positive patterns
 
-Still no auto-trading by default.
-
-- Add paper-trade mode
-- Add watchlist state
-- Add invalidation alerts
-- Add position sizing suggestions for manual review
+Goal: make the system improve through audit and feedback.
 
 ## Design Principles
 
+- AI agents own research questions; tools own data retrieval and deterministic calculations.
 - Primary evidence beats commentary.
-- Quality and structural risk gate Focus decisions.
-- Reddit can inform sentiment but must not dominate.
-- Every final score must be explainable.
+- SEC filings and financials outrank social sentiment.
+- Scores summarize reasoning; they do not replace reasoning.
+- Risk Agent has veto power.
 - Every Focus candidate must include a bear case.
-- The system should prefer saying `Watch` over forcing a trade idea.
-
+- Every conclusion must expose evidence, confidence, and missing data.
+- The system should prefer `Watch` over forcing a weak `Focus`.
+- No automatic trading without a separate explicit design and approval.
