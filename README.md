@@ -27,6 +27,8 @@ Outputs are written to `outputs/` as both Markdown and JSON.
 
 The Markdown report is designed for a human reader. Each candidate includes:
 
+- An AI Agent Review section that produces `Focus`, `Watch`, `Pass`, or `Blocked`
+- Agent committee summaries for News, SEC Filing, Financial, Technical, Sentiment, Debate, and Risk review
 - A deep-dive shortlist that narrows the top 10 down to 2-3 focus candidates
 - Business quality, valuation, and structural-risk scores based on SEC company facts when available
 - A `Data Confidence` rating based on SEC filing evidence and second-source price consistency
@@ -44,6 +46,26 @@ Run it once per trading day before the US market open:
 ```bash
 python3 src/event_bottom_fishing.py --top 10
 ```
+
+By default, the agent review is deterministic and does not call an LLM. This keeps GitHub Actions reliable and avoids token spend unless explicitly enabled.
+
+To add a compact OpenAI review overlay for the highest-ranked candidates:
+
+```bash
+OPENAI_API_KEY=... python3 src/event_bottom_fishing.py \
+  --top 10 \
+  --agent-provider openai \
+  --agent-llm-count 3 \
+  --agent-token-budget 900 \
+  --agent-max-output-tokens 350
+```
+
+Token controls:
+
+- `--agent-llm-count` limits how many candidates are sent to the LLM.
+- `--agent-token-budget` caps the compact per-candidate prompt.
+- `--agent-max-output-tokens` caps response length.
+- Raw article text and full filings are not sent; prompts use compressed event, SEC, financial, technical, debate, and risk summaries.
 
 To generate the report and email it from your own machine or any SMTP-enabled environment:
 
@@ -107,6 +129,18 @@ The report also assigns `Data Confidence`:
 - `High`: SEC filing evidence is present and Yahoo/Stooq price calculations broadly agree
 - `Medium`: at least one major cross-check supports the signal
 - `Low`: the candidate relies mostly on Yahoo headlines/prices and needs manual verification before serious research
+
+The AI agent review then overlays:
+
+- News Agent: explains the event narrative and headline credibility
+- SEC Filing Agent: checks whether primary filings are present and what is still missing
+- Financial Agent: judges business quality, valuation, and structural risk
+- Technical Agent: checks stabilization and falling-knife risk
+- Sentiment Agent: currently marks social sentiment as unavailable until a real source is added
+- Debate Agent: summarizes bull and bear cases
+- Risk Agent: can downgrade or block a candidate
+
+The AI agent review is still a research workflow, not an investment recommendation.
 
 The output classes are:
 

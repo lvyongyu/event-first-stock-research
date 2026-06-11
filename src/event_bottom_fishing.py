@@ -128,6 +128,47 @@ class FundamentalScore:
 
 
 @dataclasses.dataclass
+class Evidence:
+    source_type: str
+    source: str
+    claim: str
+    credibility: float
+    date: str = ""
+
+
+@dataclasses.dataclass
+class AgentResult:
+    agent: str
+    task: str
+    conclusion: str
+    stance: str
+    confidence: float
+    evidence: list[Evidence] = dataclasses.field(default_factory=list)
+    counterarguments: list[str] = dataclasses.field(default_factory=list)
+    missing_evidence: list[str] = dataclasses.field(default_factory=list)
+    risk_flags: list[str] = dataclasses.field(default_factory=list)
+    next_steps: list[str] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass
+class AgentReview:
+    action: str = "Watch"
+    trade_score: float = 0.0
+    evidence_quality: float = 0.0
+    risk_rating: str = "Medium"
+    thesis: str = ""
+    main_bull_case: str = ""
+    main_bear_case: str = ""
+    missing_evidence: list[str] = dataclasses.field(default_factory=list)
+    invalidation_conditions: list[str] = dataclasses.field(default_factory=list)
+    agent_results: list[AgentResult] = dataclasses.field(default_factory=list)
+    token_budget: int = 0
+    prompt_tokens_estimate: int = 0
+    llm_provider: str = "heuristic"
+    llm_notes: str = ""
+
+
+@dataclasses.dataclass
 class Candidate:
     ticker: str
     score: float
@@ -145,6 +186,7 @@ class Candidate:
     deep_dive_risks: list[str] = dataclasses.field(default_factory=list)
     data_confidence: DataConfidence = dataclasses.field(default_factory=DataConfidence)
     fundamentals: FundamentalScore = dataclasses.field(default_factory=FundamentalScore)
+    agent_review: AgentReview = dataclasses.field(default_factory=AgentReview)
 
 
 def fetch_url(url: str, timeout: int = 12) -> bytes:
@@ -919,6 +961,555 @@ def apply_deep_dive(candidates: list[Candidate], focus_count: int) -> list[Candi
     return candidates
 
 
+def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
+
+
+def compact_text(value: str, max_chars: int) -> str:
+    value = re.sub(r"\s+", " ", value).strip()
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3].rstrip() + "..."
+
+
+def estimate_tokens(value: str) -> int:
+    return max(1, len(value) // 4)
+
+
+def evidence_quality(candidate: Candidate) -> tuple[float, list[str]]:
+    category_counts = count_categories(candidate.events)
+    specific_events = [
+        event for event in candidate.events
+        if any(category != "macro_sector" for category in event.categories)
+    ]
+    source_credibility = 0.45
+    reasons = ["Yahoo RSS is the discovery source, so headline evidence starts at medium-low credibility."]
+    if candidate.data_confidence.sec_filings:
+        source_credibility = max(source_credibility, 0.85)
+        reasons.append("Recent SEC filings provide primary-source evidence.")
+    if candidate.fundamentals.source_status == "SEC company facts":
+        source_credibility = max(source_credibility, 0.75)
+        reasons.append("SEC company facts support the financial review.")
+
+    primary_confirmation = 1.0 if candidate.data_confidence.sec_filings else 0.35
+    if candidate.data_confidence.level == "High":
+        primary_confirmation = max(primary_confirmation, 0.8)
+    elif candidate.data_confidence.level == "Medium":
+        primary_confirmation = max(primary_confirmation, 0.55)
+
+    sentiments = [event.sentiment for event in specific_events]
+    positive = sum(1 for sentiment in sentiments if sentiment > 0)
+    negative = sum(1 for sentiment in sentiments if sentiment < 0)
+    if positive and negative:
+        source_consistency = 0.55
+        reasons.append("Headlines are mixed, which lowers consistency but supports a real debate.")
+    elif sentiments:
+        source_consistency = 0.75
+        reasons.append("Company-specific headlines mostly point in one direction.")
+    else:
+        source_consistency = 0.30
+        reasons.append("The event trail is mostly macro/sector commentary.")
+
+    source_independence = clamp(len({event.link for event in specific_events}) / 5)
+    data_freshness = 0.80 if candidate.events else 0.20
+    evidence_completeness = 0.25
+    if candidate.fundamentals.source_status == "SEC company facts":
+        evidence_completeness += 0.30
+    if candidate.data_confidence.sec_filings:
+        evidence_completeness += 0.25
+    if specific_events:
+        evidence_completeness += 0.20
+
+    quality = (
+        0.30 * source_credibility
+        + 0.25 * primary_confirmation
+        + 0.15 * source_consistency
+        + 0.10 * source_independence
+        + 0.10 * data_freshness
+        + 0.10 * clamp(evidence_completeness)
+    )
+    return round(clamp(quality), 3), reasons
+
+
+def agent_news(candidate: Candidate) -> AgentResult:
+    category_counts = count_categories(candidate.events)
+    catalyst = ", ".join(top_category_labels(category_counts, 4)) or "No clear event catalyst"
+    specific_events = [
+        event for event in candidate.events
+        if any(category != "macro_sector" for category in event.categories)
+    ]
+    confidence = clamp(0.35 + min(len(specific_events), 5) * 0.08)
+    stance = "mixed"
+    if category_counts.get("terminal_risk") or category_counts.get("legal_regulatory"):
+        stance = "negative"
+    elif category_counts.get("analyst_positive") or category_counts.get("company_action_positive"):
+        stance = "mixed_positive"
+    elif category_counts.get("earnings_recoverable"):
+        stance = "mixed"
+    news_evidence = [
+        Evidence(
+            source_type="news",
+            source=event.link,
+            date=event.published.date().isoformat() if event.published else "",
+            claim=event.title,
+            credibility=0.45,
+        )
+        for event in candidate.events[:3]
+    ]
+    return AgentResult(
+        agent="news",
+        task="Identify the event catalyst and credibility of the market narrative.",
+        conclusion=f"The visible event narrative is: {catalyst}.",
+        stance=stance,
+        confidence=round(confidence, 2),
+        evidence=news_evidence,
+        counterarguments=[
+            "Yahoo RSS headlines may be syndicated commentary rather than independent reporting.",
+            "The market narrative must be checked against primary filings or earnings material.",
+        ],
+        missing_evidence=["Company press release or earnings transcript"] if category_counts.get("earnings_recoverable") else [],
+        risk_flags=["legal/regulatory headline present"] if category_counts.get("legal_regulatory") else [],
+        next_steps=["Verify the main catalyst with a primary company source."],
+    )
+
+
+def agent_sec(candidate: Candidate) -> AgentResult:
+    filings = candidate.data_confidence.sec_filings
+    if filings:
+        forms = ", ".join(sorted({filing.form for filing in filings}))
+        conclusion = f"Recent SEC filing trail exists ({forms}), so the thesis can be checked against primary disclosures."
+        confidence = 0.70
+        stance = "neutral"
+        evidence = [
+            Evidence(
+                source_type="sec_filing",
+                source=filing.form,
+                date=filing.filing_date,
+                claim=filing.description or f"{filing.form} filed",
+                credibility=1.0,
+            )
+            for filing in filings[:3]
+        ]
+    else:
+        conclusion = "No recent 8-K/10-Q/10-K style filing was found in the lookback window, so primary-source confirmation is incomplete."
+        confidence = 0.35
+        stance = "unknown"
+        evidence = []
+    return AgentResult(
+        agent="sec_filing",
+        task="Check whether primary filings support or contradict the selloff thesis.",
+        conclusion=conclusion,
+        stance=stance,
+        confidence=confidence,
+        evidence=evidence,
+        counterarguments=["Filing metadata is not the same as reading the filing text."],
+        missing_evidence=["8-K/10-Q/10-K text extraction", "Risk factor diff", "Latest earnings call transcript"],
+        risk_flags=[] if filings else ["primary filing confirmation missing"],
+        next_steps=["Read the latest relevant filing sections before acting on the thesis."],
+    )
+
+
+def agent_financial(candidate: Candidate) -> AgentResult:
+    fundamentals = candidate.fundamentals
+    if fundamentals.business_quality_score >= 18 and fundamentals.structural_risk_penalty <= 12:
+        stance = "positive"
+        conclusion = "SEC-derived metrics suggest enough business quality to justify deeper research."
+        confidence = 0.68
+    elif fundamentals.structural_risk_penalty > 25:
+        stance = "negative"
+        conclusion = "Structural risk signals are too high for a normal bottom-fishing setup."
+        confidence = 0.72
+    else:
+        stance = "mixed"
+        conclusion = "Financial support is mixed; this needs manual review before promotion to Focus."
+        confidence = 0.52
+    evidence = [
+        Evidence(
+            source_type="financial_metric",
+            source=fundamentals.source_status,
+            claim=(
+                f"Quality {fundamentals.business_quality_score:.1f}, "
+                f"valuation {fundamentals.valuation_score:.1f}, "
+                f"structural risk {fundamentals.structural_risk_penalty:.1f}."
+            ),
+            credibility=0.75 if fundamentals.source_status == "SEC company facts" else 0.30,
+        )
+    ]
+    return AgentResult(
+        agent="financial",
+        task="Decide whether this is a quality business at a better valuation or a weak business getting weaker.",
+        conclusion=conclusion,
+        stance=stance,
+        confidence=confidence,
+        evidence=evidence,
+        counterarguments=fundamentals.risks[:3],
+        missing_evidence=["Peer comparison", "Latest quarterly trend", "Earnings transcript commentary"],
+        risk_flags=fundamentals.risks[:2] if fundamentals.structural_risk_penalty else [],
+        next_steps=["Compare growth, margins, and valuation against close peers."],
+    )
+
+
+def agent_technical(candidate: Candidate) -> AgentResult:
+    price = candidate.price
+    risk_flags = []
+    if price.change_5d < -10:
+        risk_flags.append("5-day price action is still sharply negative")
+    if price.above_5d_low < 2:
+        risk_flags.append("little evidence of stabilization above the 5-day low")
+    if price.above_5d_low >= 2 and price.change_5d > -10:
+        stance = "mixed_positive"
+        conclusion = "The chart shows early stabilization, but it is not proof of business improvement."
+        confidence = 0.60
+    else:
+        stance = "negative"
+        conclusion = "The setup still has falling-knife risk."
+        confidence = 0.58
+    return AgentResult(
+        agent="technical",
+        task="Judge timing and stabilization without making a business-quality claim.",
+        conclusion=conclusion,
+        stance=stance,
+        confidence=confidence,
+        evidence=[
+            Evidence(
+                source_type="price",
+                source="Yahoo chart",
+                claim=(
+                    f"60-day drawdown {price.drawdown_60d:.1f}%, "
+                    f"5-day change {price.change_5d:.1f}%, "
+                    f"{price.above_5d_low:.1f}% above 5-day low."
+                ),
+                credibility=0.60,
+            )
+        ],
+        counterarguments=["Technical stabilization can fail quickly after event-driven selloffs."],
+        missing_evidence=["Relative strength vs sector ETF", "Intraday support/volume profile"],
+        risk_flags=risk_flags,
+        next_steps=["Wait for stabilization if the stock is still below the event-day range."],
+    )
+
+
+def agent_sentiment(candidate: Candidate) -> AgentResult:
+    return AgentResult(
+        agent="sentiment",
+        task="Check retail narrative and crowding risk.",
+        conclusion="Sentiment ingestion is not enabled yet; treat crowd narrative as missing evidence.",
+        stance="unknown",
+        confidence=0.10,
+        evidence=[],
+        counterarguments=["No Reddit/social source has been ingested in this run."],
+        missing_evidence=["Reddit mention velocity", "Narrative clustering", "One-sided sentiment check"],
+        risk_flags=["sentiment unavailable"],
+        next_steps=["Add Reddit/social ingestion before using sentiment as a signal."],
+    )
+
+
+def build_debate_result(candidate: Candidate, agent_results: list[AgentResult]) -> AgentResult:
+    positive = [result for result in agent_results if result.stance in {"positive", "mixed_positive"}]
+    negative = [result for result in agent_results if result.stance == "negative"]
+    bull = candidate.deep_dive_reasons[0] if candidate.deep_dive_reasons else candidate.thesis
+    bear = candidate.deep_dive_risks[0] if candidate.deep_dive_risks else candidate.risks[0]
+    confidence = clamp((sum(result.confidence for result in agent_results) / max(len(agent_results), 1)) - 0.05 * len(negative))
+    return AgentResult(
+        agent="debate",
+        task="Produce the strongest bull case and bear case from specialist agent outputs.",
+        conclusion=(
+            f"Bull case: {bull} Bear case: {bear} "
+            f"Agent balance is {len(positive)} constructive vs {len(negative)} negative."
+        ),
+        stance="mixed_positive" if len(positive) > len(negative) else "mixed",
+        confidence=round(confidence, 2),
+        evidence=[
+            Evidence(
+                source_type="agent_committee",
+                source="specialist agents",
+                claim=f"{len(agent_results)} specialist results reviewed.",
+                credibility=0.70,
+            )
+        ],
+        counterarguments=[bear],
+        missing_evidence=sorted({item for result in agent_results for item in result.missing_evidence})[:5],
+        risk_flags=sorted({item for result in agent_results for item in result.risk_flags})[:5],
+        next_steps=["Resolve the highest-impact missing evidence before treating a candidate as Focus."],
+    )
+
+
+def build_risk_result(candidate: Candidate, evidence_score: float, agent_results: list[AgentResult]) -> AgentResult:
+    category_counts = count_categories(candidate.events)
+    risk_flags = sorted({item for result in agent_results for item in result.risk_flags})
+    hard_blocks = []
+    if category_counts.get("terminal_risk"):
+        hard_blocks.append("terminal-risk headline appeared")
+    if candidate.fundamentals.structural_risk_penalty > 30:
+        hard_blocks.append("structural risk penalty is high")
+    if evidence_score < 0.40:
+        hard_blocks.append("evidence quality is too low")
+    if candidate.fundamentals.business_quality_score < 8 and candidate.deep_dive_score < 50:
+        hard_blocks.append("business quality support is weak")
+
+    if hard_blocks:
+        rating = "Blocked"
+        stance = "negative"
+        conclusion = "Risk gate blocks this candidate from the Focus list: " + "; ".join(hard_blocks) + "."
+        confidence = 0.78
+    elif category_counts.get("legal_regulatory") or candidate.fundamentals.structural_risk_penalty > 20:
+        rating = "High"
+        stance = "negative"
+        conclusion = "Risk is high enough to require manual primary-source review before any Focus classification."
+        confidence = 0.66
+    elif evidence_score < 0.55:
+        rating = "Medium"
+        stance = "mixed"
+        conclusion = "Risk is manageable, but evidence quality is not strong enough for high conviction."
+        confidence = 0.60
+    else:
+        rating = "Low"
+        stance = "mixed_positive"
+        conclusion = "No hard risk block was found in the available evidence."
+        confidence = 0.62
+
+    return AgentResult(
+        agent="risk",
+        task="Apply vetoes and downgrade candidates with unacceptable risk or weak evidence.",
+        conclusion=conclusion,
+        stance=stance,
+        confidence=confidence,
+        evidence=[
+            Evidence(
+                source_type="risk_gate",
+                source="deterministic guardrails",
+                claim=f"Risk rating: {rating}; evidence quality: {evidence_score:.2f}.",
+                credibility=0.80,
+            )
+        ],
+        counterarguments=hard_blocks or candidate.deep_dive_risks[:3],
+        missing_evidence=sorted({item for result in agent_results for item in result.missing_evidence})[:5],
+        risk_flags=(hard_blocks + risk_flags)[:6],
+        next_steps=["Do not promote to Focus until risk blocks and missing evidence are resolved."],
+    )
+
+
+def decide_agent_action(candidate: Candidate, evidence_score: float, risk_result: AgentResult) -> tuple[str, str]:
+    if risk_result.stance == "negative" and "blocks this candidate" in risk_result.conclusion:
+        return "Blocked", "Risk Agent vetoed the setup."
+    if evidence_score < 0.45:
+        return "Pass", "Evidence quality is too low for serious research this cycle."
+    if candidate.deep_dive_decision == "Focus" and evidence_score >= 0.55 and risk_result.stance != "negative":
+        return "Focus", "Agent review supports serious manual research."
+    if candidate.deep_dive_score >= 35 and risk_result.stance != "negative":
+        return "Watch", "The setup is interesting but needs more evidence before Focus."
+    return "Pass", "The agent review does not find enough support to prioritize it."
+
+
+def build_agent_review(candidate: Candidate, token_budget: int, provider: str = "heuristic") -> AgentReview:
+    evidence_score, quality_reasons = evidence_quality(candidate)
+    specialist_results = [
+        agent_news(candidate),
+        agent_sec(candidate),
+        agent_financial(candidate),
+        agent_technical(candidate),
+        agent_sentiment(candidate),
+    ]
+    debate_result = build_debate_result(candidate, specialist_results)
+    risk_result = build_risk_result(candidate, evidence_score, specialist_results + [debate_result])
+    action, action_reason = decide_agent_action(candidate, evidence_score, risk_result)
+    trade_score = (
+        candidate.deep_dive_score
+        + evidence_score * 20
+        - (20 if action == "Blocked" else 0)
+        - (10 if risk_result.stance == "negative" else 0)
+    )
+    missing_evidence = sorted({
+        item
+        for result in specialist_results + [debate_result, risk_result]
+        for item in result.missing_evidence
+    })[:8]
+    invalidation = []
+    invalidation.extend(candidate.watchpoints[:2])
+    if candidate.fundamentals.structural_risk_penalty > 0:
+        invalidation.append("Structural risk rises or is confirmed by primary filings.")
+    if evidence_score < 0.55:
+        invalidation.append("Primary-source evidence remains unavailable.")
+
+    prompt = build_llm_prompt(candidate, specialist_results + [debate_result, risk_result], token_budget)
+    if action == "Blocked":
+        risk_rating = "Blocked"
+    elif risk_result.stance == "negative":
+        risk_rating = "High"
+    elif "No hard risk block" in risk_result.conclusion:
+        risk_rating = "Low"
+    else:
+        risk_rating = "Medium"
+
+    review = AgentReview(
+        action=action,
+        trade_score=round(trade_score, 2),
+        evidence_quality=evidence_score,
+        risk_rating=risk_rating,
+        thesis=action_reason,
+        main_bull_case=candidate.deep_dive_reasons[0] if candidate.deep_dive_reasons else candidate.thesis,
+        main_bear_case=candidate.deep_dive_risks[0] if candidate.deep_dive_risks else candidate.risks[0],
+        missing_evidence=missing_evidence,
+        invalidation_conditions=invalidation[:5],
+        agent_results=specialist_results + [debate_result, risk_result],
+        token_budget=token_budget,
+        prompt_tokens_estimate=estimate_tokens(prompt),
+        llm_provider=provider,
+        llm_notes="; ".join(quality_reasons[:3]),
+    )
+    return review
+
+
+def build_llm_prompt(candidate: Candidate, agent_results: list[AgentResult], token_budget: int) -> str:
+    """Build a compact prompt for optional LLM review.
+
+    The prompt intentionally uses summaries, top evidence, and capped lists. Raw
+    article text, full SEC filings, and long metric payloads should stay out of
+    the prompt unless a future tool explicitly retrieves a targeted excerpt.
+    """
+    max_chars = max(1200, token_budget * 4)
+    metrics = candidate.fundamentals.metrics
+    event_lines = []
+    for event in candidate.events[:3]:
+        date = event.published.date().isoformat() if event.published else "unknown"
+        event_lines.append(f"- {date}: {compact_text(event.title, 160)}")
+    filing_lines = [
+        f"- {filing.filing_date}: {filing.form} {compact_text(filing.description, 120)}"
+        for filing in candidate.data_confidence.sec_filings[:3]
+    ]
+    agent_lines = [
+        f"- {result.agent}: {compact_text(result.conclusion, 220)}"
+        for result in agent_results
+    ]
+    prompt = f"""
+You are reviewing one stock candidate for a research watchlist, not giving investment advice.
+Return JSON only with action, main_bull_case, main_bear_case, missing_evidence, and risk_notes.
+
+Ticker: {candidate.ticker}
+Initial setup: {compact_text(candidate.thesis, 240)}
+Deep dive score: {candidate.deep_dive_score:.2f}
+Deep dive decision: {candidate.deep_dive_decision}
+Data confidence: {candidate.data_confidence.level}
+Quality score: {candidate.fundamentals.business_quality_score:.1f}
+Valuation score: {candidate.fundamentals.valuation_score:.1f}
+Structural risk penalty: {candidate.fundamentals.structural_risk_penalty:.1f}
+Metrics: revenue_growth={pct(metrics.get('revenue_growth'))}, net_margin={pct(metrics.get('net_margin'))}, fcf_margin={pct(metrics.get('fcf_margin'))}, liabilities/assets={pct(metrics.get('liabilities_to_assets'))}, P/S={multiple(metrics.get('price_to_sales'))}, P/E={multiple(metrics.get('price_to_earnings'))}, FCF_yield={pct(metrics.get('fcf_yield'))}
+
+Recent events:
+{chr(10).join(event_lines) if event_lines else "- none"}
+
+Recent SEC filings:
+{chr(10).join(filing_lines) if filing_lines else "- none found in lookback"}
+
+Agent summaries:
+{chr(10).join(agent_lines)}
+""".strip()
+    return compact_text(prompt, max_chars)
+
+
+def call_openai_review(prompt: str, model: str, max_output_tokens: int) -> dict | None:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    payload = {
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a cautious equity research assistant. "
+                    "Return compact JSON only. Do not provide investment advice."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "max_output_tokens": max_output_tokens,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    text_parts = []
+    for item in result.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") == "output_text":
+                text_parts.append(content.get("text", ""))
+    text = "\n".join(text_parts).strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"raw_text": text}
+
+
+def apply_llm_overlay(
+    candidates: list[Candidate],
+    provider: str,
+    model: str,
+    review_count: int,
+    token_budget: int,
+    max_output_tokens: int,
+) -> None:
+    if provider != "openai" or not os.environ.get("OPENAI_API_KEY"):
+        return
+    reviewable = sorted(
+        candidates,
+        key=lambda item: item.agent_review.trade_score,
+        reverse=True,
+    )[:review_count]
+    for candidate in reviewable:
+        prompt = build_llm_prompt(candidate, candidate.agent_review.agent_results, token_budget)
+        try:
+            result = call_openai_review(prompt, model, max_output_tokens)
+        except Exception as exc:  # noqa: BLE001 - LLM should never break the report.
+            candidate.agent_review.llm_notes = f"OpenAI review failed: {exc}"
+            continue
+        if not result:
+            candidate.agent_review.llm_notes = "OpenAI review skipped or returned no content."
+            continue
+        candidate.agent_review.llm_provider = "openai"
+        candidate.agent_review.llm_notes = compact_text(json.dumps(result, ensure_ascii=False), 800)
+        if isinstance(result, dict):
+            action = str(result.get("action") or "").strip()
+            if action in {"Focus", "Watch", "Pass", "Blocked"}:
+                candidate.agent_review.action = action
+            if result.get("main_bull_case"):
+                candidate.agent_review.main_bull_case = compact_text(str(result["main_bull_case"]), 500)
+            if result.get("main_bear_case"):
+                candidate.agent_review.main_bear_case = compact_text(str(result["main_bear_case"]), 500)
+            if isinstance(result.get("missing_evidence"), list):
+                candidate.agent_review.missing_evidence = [
+                    compact_text(str(item), 180) for item in result["missing_evidence"][:8]
+                ]
+
+
+def apply_agent_reviews(candidates: list[Candidate], args: argparse.Namespace) -> list[Candidate]:
+    for candidate in candidates:
+        candidate.agent_review = build_agent_review(
+            candidate,
+            token_budget=args.agent_token_budget,
+            provider=args.agent_provider,
+        )
+    apply_llm_overlay(
+        candidates,
+        args.agent_provider,
+        args.agent_model,
+        args.agent_llm_count,
+        args.agent_token_budget,
+        args.agent_max_output_tokens,
+    )
+    return candidates
+
+
 def prepare_selected_candidates(
     candidates: list[Candidate],
     args: argparse.Namespace,
@@ -929,6 +1520,8 @@ def prepare_selected_candidates(
     selected = apply_deep_dive(selected, args.deep_dive_focus)
     if not args.skip_data_confidence:
         selected = apply_data_confidence(selected, args.lookback_days, args.sleep, cik_by_ticker)
+    if not args.skip_agent_review:
+        selected = apply_agent_reviews(selected, args)
     return selected
 
 
@@ -1090,6 +1683,36 @@ def candidate_to_dict(candidate: Candidate) -> dict:
             "metrics": candidate.fundamentals.metrics,
             "source_status": candidate.fundamentals.source_status,
         },
+        "agent_review": {
+            "action": candidate.agent_review.action,
+            "trade_score": candidate.agent_review.trade_score,
+            "evidence_quality": candidate.agent_review.evidence_quality,
+            "risk_rating": candidate.agent_review.risk_rating,
+            "thesis": candidate.agent_review.thesis,
+            "main_bull_case": candidate.agent_review.main_bull_case,
+            "main_bear_case": candidate.agent_review.main_bear_case,
+            "missing_evidence": candidate.agent_review.missing_evidence,
+            "invalidation_conditions": candidate.agent_review.invalidation_conditions,
+            "token_budget": candidate.agent_review.token_budget,
+            "prompt_tokens_estimate": candidate.agent_review.prompt_tokens_estimate,
+            "llm_provider": candidate.agent_review.llm_provider,
+            "llm_notes": candidate.agent_review.llm_notes,
+            "agent_results": [
+                {
+                    "agent": result.agent,
+                    "task": result.task,
+                    "conclusion": result.conclusion,
+                    "stance": result.stance,
+                    "confidence": result.confidence,
+                    "evidence": [dataclasses.asdict(evidence) for evidence in result.evidence],
+                    "counterarguments": result.counterarguments,
+                    "missing_evidence": result.missing_evidence,
+                    "risk_flags": result.risk_flags,
+                    "next_steps": result.next_steps,
+                }
+                for result in candidate.agent_review.agent_results
+            ],
+        },
         "price": dataclasses.asdict(candidate.price),
         "events": [
             {
@@ -1124,14 +1747,36 @@ def write_outputs(candidates: list[Candidate], path_prefix: str) -> tuple[str, s
         handle.write(f"Generated: {payload['generated_at']}\n\n")
         handle.write("This is a research watchlist, not investment advice or an auto-trading signal.\n\n")
 
-        focus_candidates = [candidate for candidate in candidates if candidate.deep_dive_decision == "Focus"]
-        handle.write("## Deep Dive Shortlist\n\n")
+        focus_candidates = [candidate for candidate in candidates if candidate.agent_review.action == "Focus"]
+        handle.write("## AI Agent Review Shortlist\n\n")
         if focus_candidates:
-            handle.write("These are the 2-3 candidates the second-stage review thinks are most worth serious manual research this week.\n\n")
+            handle.write("These are the 2-3 candidates the agent review thinks are most worth serious manual research today.\n\n")
+            handle.write("| Rank | Ticker | Action | Agent Score | Evidence Quality | Risk | Token Est. | Main Bull Case | Main Bear Case |\n")
+            handle.write("| ---: | --- | --- | ---: | ---: | --- | ---: | --- | --- |\n")
+            for index, candidate in enumerate(
+                sorted(focus_candidates, key=lambda item: item.agent_review.trade_score, reverse=True),
+                start=1,
+            ):
+                handle.write(
+                    f"| {index} | {candidate.ticker} | {candidate.agent_review.action} | "
+                    f"{candidate.agent_review.trade_score:.2f} | "
+                    f"{candidate.agent_review.evidence_quality:.2f} | "
+                    f"{candidate.agent_review.risk_rating} | "
+                    f"{candidate.agent_review.prompt_tokens_estimate} | "
+                    f"{markdown_escape(candidate.agent_review.main_bull_case)} | "
+                    f"{markdown_escape(candidate.agent_review.main_bear_case)} |\n"
+                )
+        else:
+            handle.write("No candidates passed the agent-review Focus threshold today.\n")
+
+        handle.write("\n## Deep Dive Shortlist\n\n")
+        deep_dive_focus = [candidate for candidate in candidates if candidate.deep_dive_decision == "Focus"]
+        if deep_dive_focus:
+            handle.write("This is the deterministic second-stage shortlist before the AI agent risk/debate overlay.\n\n")
             handle.write("| Rank | Ticker | Deep Dive | Quality | Valuation | Structural Risk | Confidence | Original Score | Why It Is A Focus Candidate | Main Risk |\n")
             handle.write("| ---: | --- | ---: | ---: | ---: | ---: | --- | ---: | --- | --- |\n")
             for index, candidate in enumerate(
-                sorted(focus_candidates, key=lambda item: item.deep_dive_score, reverse=True),
+                sorted(deep_dive_focus, key=lambda item: item.deep_dive_score, reverse=True),
                 start=1,
             ):
                 reason = candidate.deep_dive_reasons[0] if candidate.deep_dive_reasons else ""
@@ -1145,18 +1790,19 @@ def write_outputs(candidates: list[Candidate], path_prefix: str) -> tuple[str, s
                     f"{markdown_escape(reason)} | {markdown_escape(risk)} |\n"
                 )
         else:
-            handle.write("No candidates passed the deep-dive focus threshold this week.\n")
+            handle.write("No candidates passed the deterministic deep-dive focus threshold today.\n")
 
         handle.write("\n## Full Top-10 Event Screen\n\n")
-        handle.write("| Rank | Ticker | Decision | Confidence | Bucket | Score | Deep Dive | Quality | Valuation | Structural Risk | Setup | Why It Made The List | Key Risk |\n")
-        handle.write("| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |\n")
+        handle.write("| Rank | Ticker | Agent Action | Evidence Quality | Agent Risk | Deep Dive | Confidence | Bucket | Score | Quality | Valuation | Structural Risk | Setup | Why It Made The List | Key Risk |\n")
+        handle.write("| ---: | --- | --- | ---: | --- | ---: | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |\n")
         for index, candidate in enumerate(candidates, start=1):
             risk = candidate.risks[0] if candidate.risks else ""
             reason = candidate.reasons[0] if candidate.reasons else ""
             handle.write(
-                f"| {index} | {candidate.ticker} | {candidate.deep_dive_decision} | "
-                f"{candidate.data_confidence.level} | {candidate.bucket} | "
-                f"{candidate.score:.2f} | {candidate.deep_dive_score:.2f} | "
+                f"| {index} | {candidate.ticker} | {candidate.agent_review.action} | "
+                f"{candidate.agent_review.evidence_quality:.2f} | {candidate.agent_review.risk_rating} | "
+                f"{candidate.deep_dive_score:.2f} | {candidate.data_confidence.level} | {candidate.bucket} | "
+                f"{candidate.score:.2f} | "
                 f"{candidate.fundamentals.business_quality_score:.2f} | "
                 f"{candidate.fundamentals.valuation_score:.2f} | "
                 f"{candidate.fundamentals.structural_risk_penalty:.2f} | "
@@ -1169,12 +1815,39 @@ def write_outputs(candidates: list[Candidate], path_prefix: str) -> tuple[str, s
             handle.write(f"**Score:** {candidate.score:.2f}  \n")
             handle.write(f"**Deep Dive Score:** {candidate.deep_dive_score:.2f}  \n")
             handle.write(f"**Deep Dive Decision:** {candidate.deep_dive_decision}  \n")
+            handle.write(f"**Agent Action:** {candidate.agent_review.action}  \n")
+            handle.write(f"**Agent Trade Score:** {candidate.agent_review.trade_score:.2f}  \n")
+            handle.write(f"**Evidence Quality:** {candidate.agent_review.evidence_quality:.2f}  \n")
+            handle.write(f"**Agent Risk:** {candidate.agent_review.risk_rating}  \n")
+            handle.write(f"**Prompt Token Estimate:** {candidate.agent_review.prompt_tokens_estimate} / {candidate.agent_review.token_budget}  \n")
+            handle.write(f"**LLM Provider:** {candidate.agent_review.llm_provider}  \n")
             handle.write(f"**Data Confidence:** {candidate.data_confidence.level}  \n")
             handle.write(f"**Business Quality Score:** {candidate.fundamentals.business_quality_score:.2f}  \n")
             handle.write(f"**Valuation Score:** {candidate.fundamentals.valuation_score:.2f}  \n")
             handle.write(f"**Structural Risk Penalty:** {candidate.fundamentals.structural_risk_penalty:.2f}  \n")
             handle.write(f"**Bucket:** {candidate.bucket}  \n")
             handle.write(f"**Setup:** {candidate.thesis}\n\n")
+
+            handle.write("**AI agent review**\n\n")
+            handle.write(f"- Action: {candidate.agent_review.action}\n")
+            handle.write(f"- Thesis: {candidate.agent_review.thesis}\n")
+            handle.write(f"- Main bull case: {candidate.agent_review.main_bull_case}\n")
+            handle.write(f"- Main bear case: {candidate.agent_review.main_bear_case}\n")
+            if candidate.agent_review.llm_notes:
+                handle.write(f"- LLM/token notes: {candidate.agent_review.llm_notes}\n")
+            if candidate.agent_review.missing_evidence:
+                handle.write("- Missing evidence: " + "; ".join(candidate.agent_review.missing_evidence[:5]) + "\n")
+            if candidate.agent_review.invalidation_conditions:
+                handle.write("- Invalidation checks: " + "; ".join(candidate.agent_review.invalidation_conditions[:4]) + "\n")
+            handle.write("\n")
+
+            handle.write("**Agent committee**\n\n")
+            for result in candidate.agent_review.agent_results:
+                handle.write(
+                    f"- {result.agent}: {result.stance}, confidence {result.confidence:.2f}. "
+                    f"{result.conclusion}\n"
+                )
+            handle.write("\n")
 
             handle.write("**Business quality, valuation, and structural risk**\n\n")
             handle.write(f"- Source: {candidate.fundamentals.source_status}\n")
@@ -1292,6 +1965,36 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--allow-broad-news", action="store_true")
     parser.add_argument("--include-avoid", action="store_true")
     parser.add_argument("--skip-data-confidence", action="store_true")
+    parser.add_argument("--skip-agent-review", action="store_true")
+    parser.add_argument(
+        "--agent-provider",
+        choices=("heuristic", "openai"),
+        default=os.environ.get("AGENT_PROVIDER", "heuristic"),
+        help="Use heuristic agent review by default; set to openai to add a compact LLM overlay.",
+    )
+    parser.add_argument(
+        "--agent-model",
+        default=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        help="OpenAI model used only when --agent-provider openai and OPENAI_API_KEY are set.",
+    )
+    parser.add_argument(
+        "--agent-token-budget",
+        type=int,
+        default=int(os.environ.get("AGENT_TOKEN_BUDGET", "900")),
+        help="Approximate per-candidate prompt token budget for optional LLM review.",
+    )
+    parser.add_argument(
+        "--agent-max-output-tokens",
+        type=int,
+        default=int(os.environ.get("AGENT_MAX_OUTPUT_TOKENS", "350")),
+        help="Maximum output tokens for optional LLM review.",
+    )
+    parser.add_argument(
+        "--agent-llm-count",
+        type=int,
+        default=int(os.environ.get("AGENT_LLM_COUNT", "3")),
+        help="Only send this many top candidates to the optional LLM overlay.",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
