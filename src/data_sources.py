@@ -8,6 +8,7 @@ from html.parser import HTMLParser
 import json
 import os
 import re
+from pathlib import Path
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -21,6 +22,9 @@ SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.jso
 SEC_USER_AGENT = "auto-trading-research/0.1 lvyongyu@gmail.com"
 SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 LIVE_UNIVERSE_SPEC = {"sp500-live", "live-sp500", "sp500"}
+ROOT = Path(__file__).resolve().parents[1]
+CACHE_DIR = ROOT / ".cache" / "event-first"
+CACHE_TTL_DAYS = 7
 
 EVENT_KEYWORDS = {
     "earnings_miss": {
@@ -91,6 +95,51 @@ def fetch_sec_url(url: str, timeout: int = 12) -> bytes:
     )
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return response.read()
+
+
+def _ensure_cache_dir() -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _cache_path(name: str) -> Path:
+    return CACHE_DIR / name
+
+
+def _read_json_cache(name: str) -> tuple[object | None, dt.datetime | None]:
+    path = _cache_path(name)
+    if not path.exists():
+        return None, None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    fetched_at_raw = payload.get("fetched_at") if isinstance(payload, dict) else None
+    if not isinstance(fetched_at_raw, str):
+        return data, None
+    try:
+        fetched_at = dt.datetime.fromisoformat(fetched_at_raw)
+    except ValueError:
+        fetched_at = None
+    return data, fetched_at
+
+
+def _write_json_cache(name: str, data: object) -> None:
+    _ensure_cache_dir()
+    payload = {
+        "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "data": data,
+    }
+    _cache_path(name).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _is_cache_fresh(fetched_at: dt.datetime | None, ttl_days: int = CACHE_TTL_DAYS) -> bool:
+    if not fetched_at:
+        return False
+    if fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=dt.timezone.utc)
+    age = dt.datetime.now(dt.timezone.utc) - fetched_at.astimezone(dt.timezone.utc)
+    return age <= dt.timedelta(days=ttl_days)
 
 
 def load_universe_file(path: str) -> list[str]:
@@ -189,9 +238,16 @@ def fetch_sp500_universe() -> list[str]:
 def load_universe(spec: str, fallback_path: str | None = None) -> list[str]:
     normalized = (spec or "").strip().lower()
     if normalized in LIVE_UNIVERSE_SPEC:
+        cached, fetched_at = _read_json_cache("sp500_universe.json")
+        if isinstance(cached, list) and _is_cache_fresh(fetched_at):
+            return [str(item).upper() for item in cached if str(item).strip()]
         try:
-            return fetch_sp500_universe()
+            symbols = fetch_sp500_universe()
+            _write_json_cache("sp500_universe.json", symbols)
+            return symbols
         except Exception:
+            if isinstance(cached, list) and cached:
+                return [str(item).upper() for item in cached if str(item).strip()]
             if fallback_path and os.path.exists(fallback_path):
                 return load_universe_file(fallback_path)
             raise
@@ -212,15 +268,24 @@ def load_alias_file(path: str) -> dict[str, list[str]]:
 
 @lru_cache(maxsize=1)
 def load_sec_company_records() -> dict[str, dict[str, str]]:
-    payload = json.loads(fetch_sec_url(SEC_TICKERS_URL).decode("utf-8"))
-    records: dict[str, dict[str, str]] = {}
-    for record in payload.values():
-        ticker = str(record.get("ticker", "")).upper()
-        cik = str(record.get("cik_str", "")).zfill(10)
-        title = str(record.get("title", "")).strip()
-        if ticker and cik:
-            records[ticker] = {"cik": cik, "title": title}
-    return records
+    cached, fetched_at = _read_json_cache("sec_company_records.json")
+    if isinstance(cached, dict) and _is_cache_fresh(fetched_at):
+        return {str(key).upper(): {str(k): str(v) for k, v in value.items()} for key, value in cached.items() if isinstance(value, dict)}
+    try:
+        payload = json.loads(fetch_sec_url(SEC_TICKERS_URL).decode("utf-8"))
+        records: dict[str, dict[str, str]] = {}
+        for record in payload.values():
+            ticker = str(record.get("ticker", "")).upper()
+            cik = str(record.get("cik_str", "")).zfill(10)
+            title = str(record.get("title", "")).strip()
+            if ticker and cik:
+                records[ticker] = {"cik": cik, "title": title}
+        _write_json_cache("sec_company_records.json", records)
+        return records
+    except Exception:
+        if isinstance(cached, dict):
+            return {str(key).upper(): {str(k): str(v) for k, v in value.items()} for key, value in cached.items() if isinstance(value, dict)}
+        raise
 
 
 @lru_cache(maxsize=1)

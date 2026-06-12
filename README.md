@@ -69,6 +69,8 @@ By default:
 - if `OPENAI_API_KEY` is set, the script runs in `lean`
 - otherwise it runs in `deterministic`
 
+The live S&P 500 universe and SEC company-name lookup are cached locally in `.cache/event-first/` and refreshed once a week. GitHub Actions restores the same cache directory between runs.
+
 To run the full multi-agent version:
 
 ```bash

@@ -17,6 +17,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Compute cache key
+        id: cache-key
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore local cache
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: event-first-cache-${{ runner.os }}-${{ steps.cache-key.outputs.week }}
+          restore-keys: |
+            event-first-cache-${{ runner.os }}-
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
