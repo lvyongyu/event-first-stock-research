@@ -1,21 +1,54 @@
 # Event-Only US Stock Bottom-Fishing Agent
 
-This is a first-pass research agent for daily US stock bottom-fishing candidates.
+This project is a daily research engine for US stocks that sold off after real events.
+It is not an auto-trader and not investment advice.
+Its job is narrower and more useful: surface the 10 names most worth human attention, explain why they made the list, and narrow that list again into a smaller deep-dive shortlist.
 
-It does **not** give investment advice or auto-trade. It ranks stocks that recently sold off around identifiable events and produces a watchlist for further research.
+## Manifesto
+
+This codebase is built around a simple belief:
+
+- the best trading system starts as a research system
+- event context matters more than generic factor soup
+- explanations matter as much as rankings
+- every output should show its work
+- the cheapest LLM call is the one you do not need to make
+
+The workflow is intentionally opinionated:
+
+1. Find event-driven names with a real catalyst.
+2. Reject obvious terminal-risk cases.
+3. Score the remaining names with light structure, not a giant black box.
+4. Run a second-stage deep dive to narrow the list.
+5. Optionally add a multi-agent LLM layer for richer reasoning.
+6. Write a human-readable report and a JSON artifact for automation.
 
 ## What It Looks At
 
-The first version intentionally avoids multi-factor valuation models. It focuses on:
+The screener focuses on:
 
-- Recent news events from Yahoo Finance RSS as the discovery source
-- Recent price drawdown
-- Whether the stock is stabilizing after the event
-- Whether the event appears potentially recoverable
-- Whether the event looks like a hard avoid, such as fraud, bankruptcy, delisting, or severe regulatory action
-- A ticker/company-name relevance filter to reduce broad market-news noise
-- Recent SEC filings as a primary-source event cross-check
-- Stooq daily prices, when available, as a second price source to check Yahoo price calculations
+- Recent Yahoo Finance news events
+- Recent price drawdown and early stabilization
+- Whether the event looks recoverable or structurally broken
+- Whether the setup is noisy macro flow or company-specific
+- Recent SEC filings as a primary-source cross-check
+- Stooq daily prices when available as a second price source
+
+The model intentionally avoids a broad multi-factor ranking system. It is built for event-first bottom fishing.
+
+## Output
+
+Every run writes Markdown and JSON files into `outputs/`.
+
+The report includes:
+
+- Top 10 event-driven candidates
+- A deep-dive shortlist that narrows the list to 2-3 names
+- Business quality, valuation, and structural risk scores
+- A `Data Confidence` rating
+- A transparent score breakdown
+- A rationale section for each candidate
+- AI agent review notes, committee summaries, and tool traces when enabled
 
 ## Run
 
@@ -23,46 +56,58 @@ The first version intentionally avoids multi-factor valuation models. It focuses
 python3 src/event_bottom_fishing.py
 ```
 
-Outputs are written to `outputs/` as both Markdown and JSON.
+## Agent Modes
 
-The Markdown report is designed for a human reader. Each candidate includes:
+The agent layer has three modes:
 
-- An AI Agent Review section that produces `Focus`, `Watch`, `Pass`, or `Blocked`
-- Agent committee summaries for News, SEC Filing, Financial, Technical, Sentiment, Debate, and Risk review
-- A deep-dive shortlist that narrows the top 10 down to 2-3 focus candidates
-- Business quality, valuation, and structural-risk scores based on SEC company facts when available
-- A `Data Confidence` rating based on SEC filing evidence and second-source price consistency
-- The setup summary
-- Why it made the list
-- What could break the thesis
-- What to verify next
-- A transparent score breakdown
-- Source event headlines
+- `deterministic`: no LLM calls
+- `lean`: one compact final synthesis per reviewed candidate
+- `full`: LLM support for each agent step plus the final synthesis
 
-## Testing Strategy
+By default:
 
-This project is built around a simple conviction: for an AI research agent, the truth lives in the full pipeline, not in isolated helper functions.
+- if `OPENAI_API_KEY` is set, the script runs in `lean`
+- otherwise it runs in `deterministic`
 
-That means we do not optimize for a heavy unit-test-first process. We optimize for the checks that actually prove the app still works:
+To run the full multi-agent version:
 
-- Run the whole workflow end to end.
-- Verify the live public data sources still respond.
-- Inspect the generated Markdown and JSON outputs.
-- Catch broken prompts, stale assumptions, and flaky integrations early.
+```bash
+OPENAI_API_KEY=... python3 src/event_bottom_fishing.py \
+  --top 10 \
+  --agent-mode full \
+  --agent-review-count 3 \
+  --agent-token-budget 900 \
+  --agent-max-output-tokens 350
+```
 
-Why this matters:
+Token controls:
 
-- The main risk is not a pure calculation bug, it is bad research output.
-- The system depends on external news, SEC, price, and LLM behavior that changes over time.
-- Narrow unit tests can be brittle when the prompt, source mix, and ranking logic are still evolving.
-- The fastest way to lose momentum is to overbuild tests for code that is still finding its shape.
+- `--agent-mode` selects `deterministic`, `lean`, or `full`
+- `--agent-review-count` limits how many top candidates receive agent review
+- `--agent-token-budget` caps the compact prompt budget per candidate
+- `--agent-max-output-tokens` caps response length
 
-So the testing doctrine here is:
+The prompts do not send raw article text or full filings. They use compressed event, SEC, financial, technical, debate, and risk summaries.
 
-- Keep helpers deterministic and readable.
-- Add smoke tests where they prove the pipeline still works.
-- Trust end-to-end runs more than tiny abstractions.
-- Let the daily report itself be the primary proof that the system is healthy.
+## Testing Doctrine
+
+This project does not try to prove itself with a wall of unit tests.
+The important failure modes here are not tiny pure functions. They are:
+
+- broken source data
+- stale prompt assumptions
+- bad report assembly
+- fragile external integrations
+- changed runtime behavior in the live pipeline
+
+So the testing style is intentionally practical:
+
+- run the full workflow end to end
+- verify the live data sources still respond
+- inspect the generated Markdown and JSON
+- catch prompt or integration regressions early
+
+That is the right tradeoff for a system whose output is a research report, not a library API.
 
 ## Daily Use
 
@@ -71,26 +116,6 @@ Run it once per trading day before the US market open:
 ```bash
 python3 src/event_bottom_fishing.py --top 10
 ```
-
-By default, the agent review is deterministic and does not call an LLM. This keeps GitHub Actions reliable and avoids token spend unless explicitly enabled.
-
-To add a compact OpenAI review overlay for the highest-ranked candidates:
-
-```bash
-OPENAI_API_KEY=... python3 src/event_bottom_fishing.py \
-  --top 10 \
-  --agent-provider openai \
-  --agent-llm-count 3 \
-  --agent-token-budget 900 \
-  --agent-max-output-tokens 350
-```
-
-Token controls:
-
-- `--agent-llm-count` limits how many candidates are sent to the LLM.
-- `--agent-token-budget` caps the compact per-candidate prompt.
-- `--agent-max-output-tokens` caps response length.
-- Raw article text and full filings are not sent; prompts use compressed event, SEC, financial, technical, debate, and risk summaries.
 
 To generate the report and email it from your own machine or any SMTP-enabled environment:
 
@@ -110,7 +135,7 @@ For Gmail, set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, and use a Gmail app 
 
 The repository includes `.github/workflows/daily-stock-report.yml`.
 
-It runs Monday through Friday at 13:00 UTC, before the US market open in both US daylight-saving and standard-time periods. It does not run on weekends. You can also run it manually from the GitHub Actions tab with `workflow_dispatch`.
+It runs Monday through Friday at 13:00 UTC, which is before the US market open in both daylight-saving and standard-time periods. It does not run on weekends. You can also run it manually from the GitHub Actions tab with `workflow_dispatch`.
 
 By default, the GitHub workflow does not need an SMTP server. It generates the report and creates a GitHub Issue with the full watchlist. If your GitHub notifications are enabled, GitHub will email you when the issue is created.
 
@@ -126,36 +151,27 @@ Also confirm GitHub email notifications are enabled:
 GitHub -> Settings -> Notifications -> Email
 ```
 
-For a larger or smaller universe, edit `config/universe_sp100.txt`.
-For company-name matching, edit `config/company_aliases.json`.
-
 ## Ranking Idea
 
 The first-stage score favors stocks that:
 
-- Have meaningful negative or mixed events recently
-- Dropped enough to be interesting
-- Show early stabilization rather than continued free-fall
-- Do not have obvious terminal-risk event language
+- have meaningful negative or mixed events recently
+- dropped enough to be interesting
+- show early stabilization rather than continued free-fall
+- do not have obvious terminal-risk language
 
 After the first-stage top 10 is selected, a second-stage deep dive narrows the list to 2-3 focus candidates. It favors stocks where:
 
-- The event is tied to something verifiable, such as earnings, guidance, revenue, margin, or analyst revisions
-- The drawdown is meaningful but not so extreme that it likely signals structural damage
-- The stock shows at least early stabilization from its 5-day low
-- The risk is bounded enough to investigate, instead of being dominated by legal, delisting, fraud, or bankruptcy language
-- There are multiple company-specific headlines rather than only broad macro noise
-- Business quality is not weak, based on revenue growth, margin, free cash flow, and balance-sheet leverage
-- Valuation has some support, based on SEC-derived P/S, P/E, and FCF yield approximations
-- Structural risk is not high enough to block a focus designation
+- the event is tied to something verifiable, such as earnings, guidance, revenue, margin, or analyst revisions
+- the drawdown is meaningful but not so extreme that it likely signals structural damage
+- the stock shows at least early stabilization from its 5-day low
+- the risk is bounded enough to investigate, instead of being dominated by legal, delisting, fraud, or bankruptcy language
+- there are multiple company-specific headlines rather than only broad macro noise
+- business quality is not weak, based on revenue growth, margin, free cash flow, and balance-sheet leverage
+- valuation has some support, based on SEC-derived P/S, P/E, and FCF yield approximations
+- structural risk is not high enough to block a focus designation
 
-The report also assigns `Data Confidence`:
-
-- `High`: SEC filing evidence is present and Yahoo/Stooq price calculations broadly agree
-- `Medium`: at least one major cross-check supports the signal
-- `Low`: the candidate relies mostly on Yahoo headlines/prices and needs manual verification before serious research
-
-The AI agent review then overlays:
+The AI agent layer then overlays:
 
 - News Agent: explains the event narrative and headline credibility
 - SEC Filing Agent: checks whether primary filings are present and what is still missing
@@ -172,6 +188,11 @@ The output classes are:
 - `A`: High-priority research candidate
 - `B`: Watchlist
 - `C`: Weak or noisy event
-- `D`: Avoid/review only because the event risk is too severe
+- `D`: Avoid or review only because the event risk is too severe
 
 Always read the actual event context before doing anything with real money.
+
+## Configuration
+
+For a larger or smaller universe, edit `config/universe_sp100.txt`.
+For company-name matching, edit `config/company_aliases.json`.

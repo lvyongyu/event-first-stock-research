@@ -59,8 +59,29 @@ def candidate_to_dict(candidate: Candidate) -> dict:
             "invalidation_conditions": candidate.agent_review.invalidation_conditions,
             "token_budget": candidate.agent_review.token_budget,
             "prompt_tokens_estimate": candidate.agent_review.prompt_tokens_estimate,
+            "llm_mode": candidate.agent_review.llm_mode,
             "llm_provider": candidate.agent_review.llm_provider,
             "llm_notes": candidate.agent_review.llm_notes,
+            "agent_plan": [
+                {
+                    "agent": task.agent,
+                    "question": task.question,
+                    "required_tools": task.required_tools,
+                    "max_rounds": task.max_rounds,
+                    "required_fields": task.required_fields,
+                }
+                for task in candidate.agent_review.agent_plan
+            ],
+            "tool_trace": [
+                {
+                    "tool": tool.tool,
+                    "status": tool.status,
+                    "summary": tool.summary,
+                    "evidence": [dataclasses.asdict(evidence) for evidence in tool.evidence],
+                    "metadata": tool.metadata,
+                }
+                for tool in candidate.agent_review.tool_trace
+            ],
             "agent_results": [
                 {
                     "agent": result.agent,
@@ -93,6 +114,20 @@ def candidate_to_dict(candidate: Candidate) -> dict:
 
 def markdown_escape(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
+
+
+def event_label(category: str) -> str:
+    labels = {
+        "earnings_miss": "Earnings miss",
+        "earnings_recoverable": "Earnings or guidance",
+        "analyst_negative": "Negative analyst action",
+        "analyst_positive": "Positive analyst action",
+        "company_action_positive": "Company action positive",
+        "legal_regulatory": "Legal or regulatory",
+        "terminal_risk": "Terminal risk",
+        "macro_sector": "Macro or sector",
+    }
+    return labels.get(category, category.replace("_", " ").title())
 
 
 def write_outputs(candidates: list[Candidate], path_prefix: str) -> tuple[str, str]:
@@ -184,6 +219,7 @@ def write_outputs(candidates: list[Candidate], path_prefix: str) -> tuple[str, s
             handle.write(f"**Evidence Quality:** {candidate.agent_review.evidence_quality:.2f}  \n")
             handle.write(f"**Agent Risk:** {candidate.agent_review.risk_rating}  \n")
             handle.write(f"**Prompt Token Estimate:** {candidate.agent_review.prompt_tokens_estimate} / {candidate.agent_review.token_budget}  \n")
+            handle.write(f"**LLM Mode:** {candidate.agent_review.llm_mode}  \n")
             handle.write(f"**LLM Provider:** {candidate.agent_review.llm_provider}  \n")
             handle.write(f"**Data Confidence:** {candidate.data_confidence.level}  \n")
             handle.write(f"**Business Quality Score:** {candidate.fundamentals.business_quality_score:.2f}  \n")
@@ -212,6 +248,19 @@ def write_outputs(candidates: list[Candidate], path_prefix: str) -> tuple[str, s
                     f"{result.conclusion}\n"
                 )
             handle.write("\n")
+
+            if candidate.agent_review.agent_plan:
+                handle.write("**Agent plan**\n\n")
+                for task in candidate.agent_review.agent_plan:
+                    tools = ", ".join(task.required_tools) if task.required_tools else "none"
+                    handle.write(f"- {task.agent}: {task.question} [{tools}]\n")
+                handle.write("\n")
+
+            if candidate.agent_review.tool_trace:
+                handle.write("**Tool trace**\n\n")
+                for tool in candidate.agent_review.tool_trace:
+                    handle.write(f"- {tool.tool} ({tool.status}): {tool.summary}\n")
+                handle.write("\n")
 
             handle.write("**Business quality, valuation, and structural risk**\n\n")
             handle.write(f"- Source: {candidate.fundamentals.source_status}\n")

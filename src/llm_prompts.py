@@ -8,6 +8,12 @@ OPENAI_REVIEW_SYSTEM_PROMPT = (
     "Return compact JSON only. Do not provide investment advice."
 )
 
+AGENT_TASK_SYSTEM_PROMPT = (
+    "You are a disciplined stock research agent. "
+    "Use only the provided evidence and tools, keep the response compact, "
+    "and return compact JSON only."
+)
+
 
 def compact_text(value: str, max_chars: int) -> str:
     value = re.sub(r"\s+", " ", value).strip()
@@ -72,5 +78,49 @@ Recent SEC filings:
 
 Agent summaries:
 {chr(10).join(agent_lines)}
+""".strip()
+    return compact_text(prompt, max_chars)
+
+
+def build_agent_task_prompt(candidate, task, tool_results: list, state_notes: list[str], token_budget: int) -> str:
+    max_chars = max(900, token_budget * 3)
+    metric_lines = []
+    metrics = candidate.fundamentals.metrics
+    for key, label in (
+        ("revenue_growth", "revenue_growth"),
+        ("net_margin", "net_margin"),
+        ("fcf_margin", "fcf_margin"),
+        ("liabilities_to_assets", "liabilities_assets"),
+        ("price_to_sales", "price_to_sales"),
+        ("price_to_earnings", "price_to_earnings"),
+        ("fcf_yield", "fcf_yield"),
+    ):
+        metric_lines.append(f"- {label}: {pct(metrics.get(key)) if 'growth' in key or 'margin' in key or 'yield' in key or 'liabilities' in key else multiple(metrics.get(key))}")
+    tool_lines = [
+        f"- {item.tool} [{item.status}]: {compact_text(item.summary, 180)}"
+        for item in tool_results
+    ]
+    note_lines = [f"- {note}" for note in state_notes[:5]]
+    prompt = f"""
+You are handling one research task in a multi-agent stock research workflow.
+Return JSON only with decision, conclusion, stance, confidence, missing_evidence, follow_up_tools, risk_flags, and next_steps.
+
+Ticker: {candidate.ticker}
+Agent: {task.agent}
+Question: {task.question}
+Required tools: {", ".join(task.required_tools) if task.required_tools else "none"}
+Candidate thesis: {compact_text(candidate.thesis, 220)}
+Deep dive decision: {candidate.deep_dive_decision}
+Deep dive score: {candidate.deep_dive_score:.2f}
+Data confidence: {candidate.data_confidence.level}
+Score context: business_quality={candidate.fundamentals.business_quality_score:.1f}, valuation={candidate.fundamentals.valuation_score:.1f}, structural_risk={candidate.fundamentals.structural_risk_penalty:.1f}
+Metrics:
+{chr(10).join(metric_lines)}
+
+Tool results:
+{chr(10).join(tool_lines) if tool_lines else "- none"}
+
+Prior notes:
+{chr(10).join(note_lines) if note_lines else "- none"}
 """.strip()
     return compact_text(prompt, max_chars)

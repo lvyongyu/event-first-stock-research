@@ -76,6 +76,40 @@ class AgentResult:
 
 
 @dataclasses.dataclass
+class ToolResult:
+    tool: str
+    status: str
+    summary: str
+    evidence: list[Evidence] = dataclasses.field(default_factory=list)
+    metadata: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
+class AgentTask:
+    agent: str
+    question: str
+    required_tools: list[str] = dataclasses.field(default_factory=list)
+    max_rounds: int = 1
+    required_fields: list[str] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass
+class AgentPlan:
+    tasks: list[AgentTask] = dataclasses.field(default_factory=list)
+    stop_reason: str = ""
+
+
+@dataclasses.dataclass
+class AgentState:
+    ticker: str
+    task_index: int = 0
+    completed_agents: list[str] = dataclasses.field(default_factory=list)
+    pending_questions: list[str] = dataclasses.field(default_factory=list)
+    tool_trace: list[ToolResult] = dataclasses.field(default_factory=list)
+    agent_trace: list[AgentResult] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass
 class AgentReview:
     decision: str = "Watch"
     review_score: float = 0.0
@@ -89,8 +123,11 @@ class AgentReview:
     agent_results: list[AgentResult] = dataclasses.field(default_factory=list)
     token_budget: int = 0
     prompt_tokens_estimate: int = 0
+    llm_mode: str = "deterministic"
     llm_provider: str = "deterministic"
     llm_notes: str = ""
+    agent_plan: list[AgentTask] = dataclasses.field(default_factory=list)
+    tool_trace: list[ToolResult] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
