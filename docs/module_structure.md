@@ -13,8 +13,8 @@ for the structure (it matches the actual imports under `src/`).
                  └──────────────────────────────────────────┘
                           │ assemble the pipeline, CLI, send
                           ▼
-  reason / render  agent_runtime.py        reporting.py        paper_portfolio.py
-                   (multi-agent review)     (Markdown/JSON)     (paper validation ledger)
+  reason / render  agent_runtime.py   agent_review_legacy.py   reporting.py      paper_portfolio.py
+                   (live review)      (legacy review, switch)  (Markdown/JSON)   (paper ledger)
                           │
                           ▼
   score / prompt   scoring.py              llm_prompts.py
@@ -32,15 +32,16 @@ for the structure (it matches the actual imports under `src/`).
 ## Dependency graph (actual import edges)
 
 ```
-formatting        ← scoring, llm_prompts, reporting
-models            ← data_sources, scoring, reporting, paper_portfolio, agent_runtime
-data_sources      → models                              ← scoring, paper_portfolio, agent_runtime
-scoring           → data_sources, formatting, models    ← agent_runtime, event_bottom_fishing
-llm_prompts       → formatting                          ← agent_runtime, event_bottom_fishing
-reporting         → formatting, models                  ← event_bottom_fishing, email_daily_report
-paper_portfolio   → data_sources, models                ← event_bottom_fishing
-agent_runtime     → data_sources, llm_prompts, models, scoring
-event_bottom_fishing → (all of the above)
+formatting          ← scoring, llm_prompts, reporting
+models              ← data_sources, scoring, reporting, paper_portfolio, agent_runtime, agent_review_legacy
+data_sources        → models                            ← scoring, paper_portfolio, agent_runtime
+scoring             → data_sources, formatting, models  ← agent_runtime, agent_review_legacy, event_bottom_fishing
+llm_prompts         → formatting                        ← agent_runtime, agent_review_legacy
+reporting           → formatting, models                ← event_bottom_fishing, email_daily_report
+paper_portfolio     → data_sources, models              ← event_bottom_fishing
+agent_runtime       → data_sources, llm_prompts, models, scoring
+agent_review_legacy → llm_prompts, models, scoring      ← event_bottom_fishing
+event_bottom_fishing → agent_review_legacy, agent_runtime, data_sources, models, paper_portfolio, reporting, scoring
 email_daily_report   → event_bottom_fishing, reporting
 ```
 
@@ -57,15 +58,15 @@ layer can import them without creating a cycle.
 | `scoring.py` | 569 | **The single scoring home**: event screen, deep dive, fundamentals, data confidence | `score_candidate`, `score_fundamentals`, `score_deep_dive`, `build_data_confidence`, `apply_fundamental_scores`, `apply_deep_dive`, `apply_data_confidence`, `count_categories`, `event_label` (narrative phrase) |
 | `llm_prompts.py` | 120 | Prompt templates + token estimation | `build_llm_review_prompt`, `build_agent_task_prompt`, `compact_text`, `estimate_tokens`, `*_SYSTEM_PROMPT` |
 | `agent_runtime.py` | 650 | **The live** multi-agent review (with plan/tool trace, optional per-agent LLM) | `apply_agent_reviews`, `build_agent_review`, `build_agent_plan` |
+| `agent_review_legacy.py` | 525 | Legacy agent committee (6-factor evidence, optional final OpenAI overlay); selected via `--agent-impl legacy` | `apply_agent_reviews_legacy`, `build_agent_review` |
 | `reporting.py` | 335 | Render Markdown + JSON | `write_outputs`, `candidate_to_dict`, `event_display_label` (display label) |
 | `paper_portfolio.py` | 507 | Paper validation ledger (SQLite) | `apply_paper_buy`, `update_portfolio_performance`, `archive_report`, `append_*_to_outputs` |
-| `event_bottom_fishing.py` | 834 | Pipeline/CLI orchestration + **legacy agent impl (switchable)** | `main`, `parse_args`, `build_arg_parser`, `scan`, `build_candidate`, `prepare_selected_candidates`, `apply_agent_reviews` (dispatcher), `apply_agent_reviews_legacy` |
+| `event_bottom_fishing.py` | 308 | Pipeline/CLI orchestration; dispatches to the runtime or legacy agent impl | `main`, `parse_args`, `build_arg_parser`, `scan`, `build_candidate`, `prepare_selected_candidates`, `apply_agent_reviews` (dispatcher) |
 | `email_daily_report.py` | 109 | SMTP send entry point (reuses `parse_args`) | `generate_report`, `send_email`, `main` |
 
-> `event_bottom_fishing.py` is on the larger side because it keeps a full
-> **legacy agent committee** at the bottom (6-factor evidence model, selected
-> via `--agent-impl legacy`; the default is `agent_runtime`). Extracting it into
-> its own module is an optional follow-up.
+> The legacy committee lives in its own `agent_review_legacy.py` (selected via
+> `--agent-impl legacy`; the default is `agent_runtime`), so
+> `event_bottom_fishing.py` stays a thin orchestrator.
 
 ## Data flow (daily pipeline)
 
@@ -90,7 +91,7 @@ parse_args
 | Add/adjust event keyword categories | `data_sources.EVENT_KEYWORDS` |
 | Tune scoring weights / add a scoring dimension | `scoring.py` (**the single scoring home**; edits here take effect) |
 | Add a new data source (transcripts, 8-K body…) | add a fetch function in `data_sources.py`, consume it in `scoring`/`agent_runtime` |
-| Change agent reasoning / add a specialist | `agent_runtime.py` (live); the legacy version is at the bottom of `event_bottom_fishing.py` |
+| Change agent reasoning / add a specialist | `agent_runtime.py` (live); the legacy committee is `agent_review_legacy.py` |
 | Change prompts / token budget | `llm_prompts.py` |
 | Change report layout | `reporting.py` (does not affect the research conclusion) |
 | Add a shared data field | `models.py` (used by every layer) |
