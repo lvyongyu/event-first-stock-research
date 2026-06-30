@@ -20,7 +20,7 @@ import concurrent.futures
 import datetime as dt
 import os
 import sys
-from typing import Iterable
+from typing import Sequence
 
 from efsr.agents.legacy import apply_agent_reviews_legacy
 from efsr.agents.runtime import apply_agent_reviews as run_agent_reviews
@@ -227,7 +227,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = build_arg_parser().parse_args(argv)
     if args.agent_mode is None:
         legacy_provider = os.environ.get("AGENT_PROVIDER", "deterministic")
@@ -240,7 +240,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def main(argv: Iterable[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     candidates = scan(args)

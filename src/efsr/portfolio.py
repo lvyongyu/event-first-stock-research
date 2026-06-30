@@ -289,7 +289,7 @@ def update_portfolio_performance(db_path: str, candidates: list[Candidate], run_
     run_date = run_date or dt.datetime.now().strftime("%Y-%m-%d")
     run_day = _parse_date(run_date)
     latest_prices = _candidate_price_map(candidates)
-    snapshots = []
+    snapshots: list[dict[str, Any]] = []
     with connect(db_path) as conn:
         rows = conn.execute(
             """

@@ -13,7 +13,7 @@ keywords = ["stocks", "research", "event-driven", "screener", "sec"]
 dependencies = []  # standard library only
 
 [project.optional-dependencies]
-test = ["pytest>=7"]
+test = ["pytest>=7", "pyflakes>=3", "mypy>=1"]
 
 [project.scripts]
 efsr = "efsr.cli:main"

@@ -305,7 +305,7 @@ def _clean_company_alias(value: str) -> str:
 
 
 def _alias_variants(title: str) -> list[str]:
-    variants = []
+    variants: list[str] = []
     base = re.sub(r"\s+", " ", html.unescape(title)).strip()
     if not base:
         return variants

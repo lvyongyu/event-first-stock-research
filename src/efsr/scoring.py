@@ -183,7 +183,7 @@ def event_label(category: str) -> str:
 
 
 def top_category_labels(category_counts: dict[str, int], limit: int = 3) -> list[str]:
-    categories = sorted(category_counts, key=category_counts.get, reverse=True)[:limit]
+    categories = sorted(category_counts, key=lambda category: category_counts[category], reverse=True)[:limit]
     return [event_label(category) for category in categories]
 
 
