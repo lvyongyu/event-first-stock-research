@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.request
 
@@ -15,8 +16,11 @@ from efsr.models import AgentPlan, AgentResult, AgentReview, AgentTask, Candidat
 from efsr.scoring import count_categories, top_category_labels
 
 
+logger = logging.getLogger(__name__)
+
+
 def _log(message: str) -> None:
-    print(f"[agent] {message}", flush=True)
+    logger.info("[agent] %s", message)
 
 
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
