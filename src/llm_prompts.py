@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from formatting import multiple, pct
+
 
 OPENAI_REVIEW_SYSTEM_PROMPT = (
     "You are a cautious equity research assistant. "
@@ -24,14 +26,6 @@ def compact_text(value: str, max_chars: int) -> str:
 
 def estimate_tokens(value: str) -> int:
     return max(1, len(value) // 4)
-
-
-def pct(value: float | None) -> str:
-    return "n/a" if value is None else f"{value * 100:.1f}%"
-
-
-def multiple(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.1f}x"
 
 
 def build_llm_review_prompt(candidate, agent_results: list, token_budget: int) -> str:

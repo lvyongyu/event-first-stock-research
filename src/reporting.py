@@ -4,8 +4,8 @@ import dataclasses
 import datetime as dt
 import json
 
+from formatting import multiple, pct
 from models import Candidate
-from scoring import multiple, pct
 
 
 def candidate_to_dict(candidate: Candidate) -> dict:
@@ -116,7 +116,7 @@ def markdown_escape(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
 
 
-def event_label(category: str) -> str:
+def event_display_label(category: str) -> str:
     labels = {
         "earnings_miss": "Earnings miss",
         "earnings_recoverable": "Earnings or guidance",
@@ -329,7 +329,7 @@ def write_outputs(candidates: list[Candidate], path_prefix: str) -> tuple[str, s
             handle.write("**Event evidence**\n\n")
             for event in candidate.events[:5]:
                 date = event.published.date().isoformat() if event.published else "unknown date"
-                categories = ", ".join(event_label(category) for category in event.categories)
+                categories = ", ".join(event_display_label(category) for category in event.categories)
                 handle.write(f"- {date}: [{event.title}]({event.link}) ({categories})\n")
             handle.write("\n")
     return json_path, md_path

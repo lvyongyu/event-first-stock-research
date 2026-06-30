@@ -9,11 +9,10 @@ from llm_prompts import (
     AGENT_TASK_SYSTEM_PROMPT,
     build_agent_task_prompt,
     build_llm_review_prompt,
-    compact_text,
     estimate_tokens,
 )
 from models import AgentPlan, AgentResult, AgentReview, AgentTask, Candidate, Evidence, ToolResult
-from scoring import count_categories, multiple, pct, top_category_labels
+from scoring import count_categories, top_category_labels
 
 
 def _log(message: str) -> None:
@@ -341,7 +340,6 @@ def _parse_task_result(payload: dict | None, fallback: AgentResult) -> AgentResu
 
 
 def _make_result_from_tools(candidate: Candidate, task: AgentTask, tool_results: list[ToolResult], agent_results: list[AgentResult]) -> AgentResult:
-    task_tool_names = {item.tool for item in tool_results}
     category_counts = count_categories(candidate.events)
     if task.agent == "news":
         stance = "negative" if category_counts.get("terminal_risk") or category_counts.get("legal_regulatory") else ("mixed_positive" if category_counts.get("analyst_positive") or category_counts.get("company_action_positive") else "mixed")

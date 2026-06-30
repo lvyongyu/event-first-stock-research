@@ -9,9 +9,9 @@ import os
 import smtplib
 import ssl
 from email.message import EmailMessage
-from types import SimpleNamespace
 
 import event_bottom_fishing
+from reporting import write_outputs
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,27 +39,18 @@ def required_env(name: str) -> str:
 
 
 def generate_report(top: int, lookback_days: int, max_news: int) -> tuple[str, str]:
-    scan_args = SimpleNamespace(
-        universe=event_bottom_fishing.DEFAULT_UNIVERSE,
-        aliases=event_bottom_fishing.DEFAULT_ALIASES,
-        top=top,
-        lookback_days=lookback_days,
-        max_news=max_news,
-        deep_dive_focus=3,
-        sleep=0.15,
-        allow_broad_news=False,
-        include_avoid=False,
-        skip_data_confidence=False,
-        verbose=False,
-    )
-    candidates = event_bottom_fishing.scan(scan_args)
+    args = event_bottom_fishing.parse_args([])
+    args.top = top
+    args.lookback_days = lookback_days
+    args.max_news = max_news
+    candidates = event_bottom_fishing.scan(args)
     if not candidates:
         raise RuntimeError("No candidates found; check network access or widen the universe/lookback window.")
 
     os.makedirs(event_bottom_fishing.OUTPUT_DIR, exist_ok=True)
     today = dt.datetime.now().strftime("%Y-%m-%d")
     path_prefix = os.path.join(event_bottom_fishing.OUTPUT_DIR, f"daily_event_bottom_fishing_{today}")
-    return event_bottom_fishing.write_outputs(candidates, path_prefix)
+    return write_outputs(candidates, path_prefix)
 
 
 def send_email(subject: str, body: str, markdown_path: str, json_path: str, to_address: str) -> None:
