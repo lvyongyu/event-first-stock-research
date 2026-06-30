@@ -11,6 +11,7 @@ event_bottom_fishing.apply_agent_reviews when --agent-impl legacy is selected.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.request
 
@@ -22,6 +23,8 @@ from efsr.prompts import (
 )
 from efsr.models import AgentResult, AgentReview, Candidate, Evidence
 from efsr.scoring import count_categories, top_category_labels
+
+logger = logging.getLogger(__name__)
 
 
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -517,9 +520,8 @@ def apply_agent_reviews_legacy(
     if use_llm:
         apply_llm_overlay(reviewed, "openai", model, review_count, token_budget, max_output_tokens)
     if verbose:
-        print(
-            f"[agent] legacy review batch candidates={len(reviewed)} mode={mode} "
-            f"llm={'on' if use_llm else 'off'} review_count={review_count} model={model}",
-            flush=True,
+        logger.info(
+            "[agent] legacy review batch candidates=%s mode=%s llm=%s review_count=%s model=%s",
+            len(reviewed), mode, "on" if use_llm else "off", review_count, model,
         )
     return candidates

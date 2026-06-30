@@ -18,9 +18,9 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import logging
 import os
-import sys
-from typing import Iterable
+from typing import Sequence
 
 from efsr.agents.legacy import apply_agent_reviews_legacy
 from efsr.agents.runtime import apply_agent_reviews as run_agent_reviews
@@ -46,6 +46,8 @@ from efsr.scoring import (
     load_sec_ticker_map_safely,
     score_candidate,
 )
+
+logger = logging.getLogger(__name__)
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -130,6 +132,7 @@ def scan(args: argparse.Namespace) -> list[Candidate]:
     tickers = load_universe(args.universe)
     aliases_by_ticker = load_aliases(args.aliases, universe=tickers)
     candidates = []
+    errors = 0
     max_workers = max(1, args.scan_workers)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
@@ -139,12 +142,17 @@ def scan(args: argparse.Namespace) -> list[Candidate]:
         for future in concurrent.futures.as_completed(futures):
             index, candidate, error = future.result()
             ticker = tickers[index - 1]
-            if error and args.verbose:
-                print(f"[{index}/{len(tickers)}] {ticker}: skipped ({error})", file=sys.stderr, flush=True)
+            if error:
+                errors += 1
+                logger.debug("[%d/%d] %s: skipped (%s)", index, len(tickers), ticker, error)
             if candidate:
                 candidates.append(candidate)
-                if args.verbose:
-                    print(f"[{index}/{len(tickers)}] {ticker}: {candidate.score:.2f}", flush=True)
+                logger.debug("[%d/%d] %s: %.2f", index, len(tickers), ticker, candidate.score)
+    # Distinguish "quiet market" from "upstream broken": a high error rate means the
+    # data sources likely failed rather than there being no event-driven names today.
+    log = logger.warning if errors > len(tickers) // 2 else logger.info
+    log("scan complete: %d/%d tickers yielded candidates, %d fetch errors",
+        len(candidates), len(tickers), errors)
     candidates.sort(key=lambda item: item.score, reverse=True)
     return prepare_selected_candidates(candidates, args)
 
@@ -227,7 +235,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = build_arg_parser().parse_args(argv)
     if args.agent_mode is None:
         legacy_provider = os.environ.get("AGENT_PROVIDER", "deterministic")
@@ -240,12 +248,20 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def main(argv: Iterable[str] | None = None) -> int:
+def _configure_logging(verbose: bool) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    _configure_logging(args.verbose)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     candidates = scan(args)
     if not candidates:
-        print("No candidates found. Check network access or widen the universe/lookback window.")
+        logger.error("No candidates found. Check network access or widen the universe/lookback window.")
         return 1
 
     today = dt.datetime.now().strftime("%Y-%m-%d")
@@ -262,26 +278,23 @@ def main(argv: Iterable[str] | None = None) -> int:
         append_paper_buy_to_outputs(md_path, json_path, paper_result)
         if paper_result["status"] == "bought" and paper_result["position"]:
             position = paper_result["position"]
-            print(
-                f"[paper] bought {position['ticker']} ${position['notional']:.2f} "
-                f"at ${position['price']:.2f}; shares={position['shares']:.6f}; "
-                f"db={args.paper_portfolio_db}",
-                flush=True,
+            logger.info(
+                "[paper] bought %s $%.2f at $%.2f; shares=%.6f; db=%s",
+                position["ticker"], position["notional"], position["price"],
+                position["shares"], args.paper_portfolio_db,
             )
         else:
-            print(f"[paper] no new buy; db={args.paper_portfolio_db}", flush=True)
+            logger.info("[paper] no new buy; db=%s", args.paper_portfolio_db)
     performance_result = update_portfolio_performance(
         args.paper_portfolio_db,
         candidates,
         run_date=today,
     )
     append_performance_to_outputs(md_path, json_path, performance_result)
-    print(
-        f"[paper] performance positions={performance_result['open_positions']} "
-        f"value=${performance_result['total_value']:.2f} "
-        f"pnl=${performance_result['total_unrealized_pnl']:.2f} "
-        f"return={performance_result['total_return_pct']:.2f}%",
-        flush=True,
+    logger.info(
+        "[paper] performance positions=%s value=$%.2f pnl=$%.2f return=%.2f%%",
+        performance_result["open_positions"], performance_result["total_value"],
+        performance_result["total_unrealized_pnl"], performance_result["total_return_pct"],
     )
     archive_result = archive_report(
         args.paper_portfolio_db,
@@ -291,10 +304,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         candidates=candidates,
         paper_buy_result=paper_result,
     )
-    print(
-        f"[paper] archived report date={archive_result['run_date']} "
-        f"candidates={archive_result['candidate_count']} db={archive_result['db_path']}",
-        flush=True,
+    logger.info(
+        "[paper] archived report date=%s candidates=%s db=%s",
+        archive_result["run_date"], archive_result["candidate_count"], archive_result["db_path"],
     )
     print(f"Wrote {md_path}")
     print(f"Wrote {json_path}")

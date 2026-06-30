@@ -2,15 +2,55 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from efsr.sources import fetch_price_stats
+from efsr.sources import fetch_close_history, fetch_price_stats
 from efsr.models import Candidate
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_BUY_AMOUNT = 100.0
+BENCHMARK_TICKER = "SPY"
+
+
+def _close_on_or_before(history: dict[str, float], date_iso: str) -> float | None:
+    """Latest close at or before date_iso (handles weekends/holidays)."""
+    eligible = [day for day in history if day <= date_iso]
+    return history[max(eligible)] if eligible else None
+
+
+def compute_benchmark(snapshots: list[dict[str, Any]], spy_history: dict[str, float]) -> dict[str, Any] | None:
+    """Buy-and-hold benchmark: what each position's notional would have returned in
+    SPY over the same holding window. Returns None if no usable benchmark data."""
+    if not snapshots or not spy_history:
+        return None
+    spy_now = spy_history[max(spy_history)]
+    bench_cost = 0.0
+    bench_value = 0.0
+    covered = 0
+    beating = 0
+    for snap in snapshots:
+        spy_at_buy = _close_on_or_before(spy_history, str(snap["buy_date"]))
+        if not spy_at_buy:
+            continue
+        covered += 1
+        notional = float(snap["notional"])
+        spy_return = spy_now / spy_at_buy - 1
+        bench_cost += notional
+        bench_value += notional * (1 + spy_return)
+        if float(snap["return_pct"]) / 100.0 > spy_return:
+            beating += 1
+    if not covered or not bench_cost:
+        return None
+    return {
+        "benchmark_ticker": BENCHMARK_TICKER,
+        "benchmark_return_pct": round((bench_value / bench_cost - 1) * 100, 2),
+        "positions_covered": covered,
+        "positions_beating_benchmark": beating,
+    }
 
 
 def _now_utc() -> str:
@@ -289,7 +329,7 @@ def update_portfolio_performance(db_path: str, candidates: list[Candidate], run_
     run_date = run_date or dt.datetime.now().strftime("%Y-%m-%d")
     run_day = _parse_date(run_date)
     latest_prices = _candidate_price_map(candidates)
-    snapshots = []
+    snapshots: list[dict[str, Any]] = []
     with connect(db_path) as conn:
         rows = conn.execute(
             """
@@ -367,6 +407,21 @@ def update_portfolio_performance(db_path: str, candidates: list[Candidate], run_
     total_value = sum(float(item["market_value"]) for item in snapshots)
     total_pnl = total_value - total_cost
     total_return_pct = (total_value / total_cost - 1) * 100 if total_cost else 0
+    winners = sum(1 for item in snapshots if float(item["unrealized_pnl"]) > 0)
+    losers = sum(1 for item in snapshots if float(item["unrealized_pnl"]) < 0)
+    decided = winners + losers
+    win_rate_pct = (winners / decided * 100) if decided else 0.0
+
+    spy_history: dict[str, float] = {}
+    try:
+        spy_history = fetch_close_history(BENCHMARK_TICKER)
+    except Exception as exc:  # noqa: BLE001 - benchmark must never break the report
+        logger.warning("benchmark (%s) history fetch failed: %s", BENCHMARK_TICKER, exc)
+    benchmark = compute_benchmark(snapshots, spy_history)
+    excess_return_pct = (
+        round(total_return_pct - benchmark["benchmark_return_pct"], 2) if benchmark else None
+    )
+
     return {
         "run_date": run_date,
         "db_path": db_path,
@@ -376,8 +431,11 @@ def update_portfolio_performance(db_path: str, candidates: list[Candidate], run_
         "total_unrealized_pnl": round(total_pnl, 2),
         "total_return_pct": round(total_return_pct, 2),
         "positions": snapshots,
-        "winners": sum(1 for item in snapshots if float(item["unrealized_pnl"]) > 0),
-        "losers": sum(1 for item in snapshots if float(item["unrealized_pnl"]) < 0),
+        "winners": winners,
+        "losers": losers,
+        "win_rate_pct": round(win_rate_pct, 2),
+        "benchmark": benchmark,
+        "excess_return_pct": excess_return_pct,
     }
 
 
@@ -424,7 +482,22 @@ def append_performance_to_outputs(markdown_path: str, json_path: str, result: di
             f"- Unrealized P/L: ${float(result.get('total_unrealized_pnl', 0)):.2f} "
             f"({float(result.get('total_return_pct', 0)):.2f}%)\n"
         )
-        handle.write(f"- Winners / losers: {result.get('winners', 0)} / {result.get('losers', 0)}\n\n")
+        handle.write(
+            f"- Winners / losers: {result.get('winners', 0)} / {result.get('losers', 0)} "
+            f"(win rate {float(result.get('win_rate_pct', 0)):.1f}%)\n"
+        )
+        benchmark = result.get("benchmark")
+        if benchmark:
+            excess = result.get("excess_return_pct")
+            handle.write(
+                f"- Benchmark ({benchmark['benchmark_ticker']} buy-and-hold over the same windows): "
+                f"{float(benchmark['benchmark_return_pct']):.2f}%"
+                + (f" | excess: {float(excess):+.2f}%" if excess is not None else "")
+                + f" | beating benchmark: {benchmark['positions_beating_benchmark']}/{benchmark['positions_covered']}\n"
+            )
+        else:
+            handle.write("- Benchmark: unavailable this run\n")
+        handle.write("\n")
         if positions:
             handle.write("| Ticker | Buy Date | Days Held | Cost | Entry | Current | Value | P/L | Return |\n")
             handle.write("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")

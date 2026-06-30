@@ -3,6 +3,8 @@ from __future__ import annotations
 import datetime as dt
 import email.utils
 import html
+import logging
+import time
 from functools import lru_cache
 from html.parser import HTMLParser
 import json
@@ -14,6 +16,26 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from efsr.models import FilingItem, NewsItem, PriceStats
+
+logger = logging.getLogger(__name__)
+
+FETCH_RETRIES = 2
+FETCH_BACKOFF_SECONDS = 0.6
+
+
+def _read_with_retry(req: urllib.request.Request, timeout: int) -> bytes:
+    """urlopen with bounded exponential-backoff retries; logs and re-raises on give-up."""
+    for attempt in range(FETCH_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except Exception as exc:  # noqa: BLE001 - retry any transient transport error
+            if attempt >= FETCH_RETRIES:
+                logger.warning("fetch failed after %d attempts: %s (%s)",
+                               attempt + 1, req.full_url, exc)
+                raise
+            time.sleep(FETCH_BACKOFF_SECONDS * (2 ** attempt))
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -81,8 +103,7 @@ def fetch_url(url: str, timeout: int = 12) -> bytes:
             "Accept": "*/*",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return response.read()
+    return _read_with_retry(req, timeout)
 
 
 def fetch_sec_url(url: str, timeout: int = 12) -> bytes:
@@ -93,8 +114,7 @@ def fetch_sec_url(url: str, timeout: int = 12) -> bytes:
             "Accept": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return response.read()
+    return _read_with_retry(req, timeout)
 
 
 def _ensure_cache_dir() -> None:
@@ -245,10 +265,12 @@ def load_universe(spec: str, fallback_path: str | None = None) -> list[str]:
             symbols = fetch_sp500_universe()
             _write_json_cache("sp500_universe.json", symbols)
             return symbols
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             if isinstance(cached, list) and cached:
+                logger.warning("live S&P 500 fetch failed (%s); using stale cache", exc)
                 return [str(item).upper() for item in cached if str(item).strip()]
             if fallback_path and os.path.exists(fallback_path):
+                logger.warning("live S&P 500 fetch failed (%s); using fallback file %s", exc, fallback_path)
                 return load_universe_file(fallback_path)
             raise
     if os.path.exists(spec):
@@ -282,8 +304,9 @@ def load_sec_company_records() -> dict[str, dict[str, str]]:
                 records[ticker] = {"cik": cik, "title": title}
         _write_json_cache("sec_company_records.json", records)
         return records
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
         if isinstance(cached, dict):
+            logger.warning("SEC company-tickers fetch failed (%s); using stale cache", exc)
             return {str(key).upper(): {str(k): str(v) for k, v in value.items()} for key, value in cached.items() if isinstance(value, dict)}
         raise
 
@@ -305,7 +328,7 @@ def _clean_company_alias(value: str) -> str:
 
 
 def _alias_variants(title: str) -> list[str]:
-    variants = []
+    variants: list[str] = []
     base = re.sub(r"\s+", " ", html.unescape(title)).strip()
     if not base:
         return variants
@@ -467,6 +490,27 @@ def fetch_price_stats(ticker: str) -> PriceStats | None:
         above_5d_low=(last / low_5 - 1) * 100,
         volume_ratio_5d_20d=avg_vol_5 / avg_vol_20 if avg_vol_20 else 0,
     )
+
+
+def fetch_close_history(ticker: str, range_: str = "1y") -> dict[str, float]:
+    """Return {ISO date -> daily close} for a ticker (used for benchmark returns)."""
+    symbol = urllib.parse.quote(ticker.replace("-", "-"))
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{symbol}?range={range_}&interval=1d&includePrePost=false"
+    )
+    payload = json.loads(fetch_url(url).decode("utf-8"))
+    result = payload.get("chart", {}).get("result") or []
+    if not result:
+        return {}
+    timestamps = result[0].get("timestamp", []) or []
+    closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", []) or []
+    history: dict[str, float] = {}
+    for ts, close in zip(timestamps, closes):
+        if isinstance(close, (int, float)):
+            day = dt.datetime.fromtimestamp(ts, dt.timezone.utc).date().isoformat()
+            history[day] = float(close)
+    return history
 
 
 def parse_csv_rows(raw: bytes) -> list[dict[str, str]]:

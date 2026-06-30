@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import time
+
 from efsr.sources import (
     fetch_recent_sec_filings,
     fetch_sec_company_facts,
@@ -11,6 +14,8 @@ from efsr.sources import (
 )
 from efsr.formatting import multiple, pct
 from efsr.models import Candidate, DataConfidence, FundamentalScore, NewsItem, PriceStats
+
+logger = logging.getLogger(__name__)
 
 
 def add_score(breakdown: dict[str, float], label: str, value: float) -> None:
@@ -183,7 +188,7 @@ def event_label(category: str) -> str:
 
 
 def top_category_labels(category_counts: dict[str, int], limit: int = 3) -> list[str]:
-    categories = sorted(category_counts, key=category_counts.get, reverse=True)[:limit]
+    categories = sorted(category_counts, key=lambda category: category_counts[category], reverse=True)[:limit]
     return [event_label(category) for category in categories]
 
 
@@ -402,7 +407,8 @@ def build_data_confidence(candidate: Candidate, sec_filings, secondary_price: Pr
 def load_sec_ticker_map_safely() -> dict[str, str]:
     try:
         return load_sec_ticker_map()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("SEC ticker map unavailable (%s); SEC-derived signals will be empty", exc)
         return {}
 
 
@@ -411,17 +417,14 @@ def apply_fundamental_scores(candidates, cik_by_ticker: dict[str, str], sleep_se
         try:
             facts = fetch_sec_company_facts(candidate.ticker, cik_by_ticker)
             candidate.fundamentals = score_fundamentals(candidate, facts)
-            import time
-
             time.sleep(sleep_seconds)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fundamentals fetch failed for %s: %s", candidate.ticker, exc)
             candidate.fundamentals = FundamentalScore(source_status="SEC company facts unavailable")
     return candidates
 
 
 def apply_data_confidence(candidates, lookback_days: int, sleep_seconds: float, cik_by_ticker: dict[str, str] | None = None):
-    import time
-
     cik_by_ticker = cik_by_ticker or load_sec_ticker_map_safely()
     for candidate in candidates:
         sec_filings = []
@@ -429,12 +432,14 @@ def apply_data_confidence(candidates, lookback_days: int, sleep_seconds: float, 
         try:
             sec_filings = fetch_recent_sec_filings(candidate.ticker, cik_by_ticker, lookback_days)
             time.sleep(sleep_seconds)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SEC filings fetch failed for %s: %s", candidate.ticker, exc)
             sec_filings = []
         try:
             secondary_price = fetch_stooq_price_stats(candidate.ticker)
             time.sleep(sleep_seconds)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("secondary price unavailable for %s: %s", candidate.ticker, exc)
             secondary_price = None
         candidate.data_confidence = build_data_confidence(candidate, sec_filings, secondary_price)
     return candidates
