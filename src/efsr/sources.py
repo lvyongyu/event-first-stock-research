@@ -492,6 +492,27 @@ def fetch_price_stats(ticker: str) -> PriceStats | None:
     )
 
 
+def fetch_close_history(ticker: str, range_: str = "1y") -> dict[str, float]:
+    """Return {ISO date -> daily close} for a ticker (used for benchmark returns)."""
+    symbol = urllib.parse.quote(ticker.replace("-", "-"))
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{symbol}?range={range_}&interval=1d&includePrePost=false"
+    )
+    payload = json.loads(fetch_url(url).decode("utf-8"))
+    result = payload.get("chart", {}).get("result") or []
+    if not result:
+        return {}
+    timestamps = result[0].get("timestamp", []) or []
+    closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", []) or []
+    history: dict[str, float] = {}
+    for ts, close in zip(timestamps, closes):
+        if isinstance(close, (int, float)):
+            day = dt.datetime.fromtimestamp(ts, dt.timezone.utc).date().isoformat()
+            history[day] = float(close)
+    return history
+
+
 def parse_csv_rows(raw: bytes) -> list[dict[str, str]]:
     lines = raw.decode("utf-8").strip().splitlines()
     if len(lines) < 2:
