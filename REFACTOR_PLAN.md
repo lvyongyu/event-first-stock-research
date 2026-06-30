@@ -15,6 +15,7 @@
 >   把预留委员会接成真·可切换实现(默认 runtime)
 > - ✅ Step 4 收尾:`pct`/`multiple` 收敛到叶子模块 `formatting.py`;`reporting.event_label` →
 >   `event_display_label` 消歧;清理 `agent_runtime.py` 未用 import + 死变量
+> - ✅ Step 5 离线冒烟测试 `tests/smoke_offline.py`(单一真相源 / 评分钉值 / 双 agent 实现+序列化 / 路由)
 > - ➕ 额外:修通 `email_daily_report.py` 的 SMTP 备用入口(抽 `build_arg_parser`/`parse_args` 共用,
 >   修掉手搓 `SimpleNamespace` 漂移的 4 处缺字段 + `write_outputs` 误用)
 
