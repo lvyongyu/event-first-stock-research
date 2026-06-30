@@ -9,15 +9,8 @@ from data_sources import (
     latest_two_annual_values,
     latest_value,
 )
-from models import Candidate, DataConfidence, FundamentalScore, PriceStats
-
-
-def pct(value: float | None) -> str:
-    return "n/a" if value is None else f"{value * 100:.1f}%"
-
-
-def multiple(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.1f}x"
+from formatting import multiple, pct
+from models import Candidate, DataConfidence, FundamentalScore, NewsItem, PriceStats
 
 
 def add_score(breakdown: dict[str, float], label: str, value: float) -> None:
@@ -478,3 +471,99 @@ def apply_deep_dive(candidates, focus_count: int):
         else:
             candidate.deep_dive_decision = "Pass"
     return candidates
+
+
+def score_candidate(ticker: str, news: list[NewsItem], price: PriceStats) -> Candidate:
+    category_counts = count_categories(news)
+
+    specific_events = [
+        item for item in news
+        if any(category != "macro_sector" for category in item.categories)
+    ]
+    macro_event_count = len(news) - len(specific_events)
+    negative_event_count = sum(1 for item in specific_events if item.sentiment < 0)
+    positive_event_count = sum(1 for item in specific_events if item.sentiment > 0)
+    terminal = category_counts.get("terminal_risk", 0)
+    legal = category_counts.get("legal_regulatory", 0)
+
+    breakdown: dict[str, float] = {}
+    add_score(breakdown, "company-specific event count", min(len(specific_events), 6) * 4)
+    add_score(breakdown, "macro/sector event count", min(macro_event_count, 3) * 1)
+    add_score(breakdown, "negative event catalyst", min(negative_event_count, 4) * 6)
+    add_score(breakdown, "positive offsetting catalyst", min(positive_event_count, 3) * 2)
+    add_score(
+        breakdown,
+        "60-day drawdown",
+        min(abs(price.drawdown_60d), 35) * 1.1 if price.drawdown_60d < -8 else -8,
+    )
+    add_score(
+        breakdown,
+        "20-day selloff",
+        min(abs(price.change_20d), 25) * 0.8 if price.change_20d < -5 else -5,
+    )
+    add_score(breakdown, "bounce from 5-day low", min(price.above_5d_low, 10) * 2.0)
+    add_score(breakdown, "recent volume expansion", min(max(price.volume_ratio_5d_20d - 1, 0), 3) * 4)
+
+    if category_counts.get("earnings_recoverable"):
+        add_score(breakdown, "recoverable earnings/guidance event", 8)
+    if category_counts.get("analyst_positive") or category_counts.get("company_action_positive"):
+        add_score(breakdown, "constructive analyst/company action", 6)
+    if category_counts.get("earnings_miss"):
+        add_score(breakdown, "earnings disappointment catalyst", 5)
+    if legal:
+        add_score(breakdown, "legal/regulatory penalty", legal * -8)
+    if terminal:
+        add_score(breakdown, "terminal-risk penalty", terminal * -30)
+    if price.change_5d < -12 and price.above_5d_low < 2:
+        add_score(breakdown, "falling-knife penalty", -12)
+    if not specific_events:
+        add_score(breakdown, "weak company-specific event penalty", -25)
+
+    score = sum(breakdown.values())
+
+    risks = []
+    if terminal:
+        risks.append("terminal-risk language appeared in recent event headlines")
+    if legal:
+        risks.append("legal/regulatory event may be hard to handicap")
+    if price.change_5d < -10:
+        risks.append("short-term price action is still falling sharply")
+    if price.drawdown_60d < -25:
+        risks.append("deep drawdown may reflect real fundamental damage")
+    if not risks:
+        risks.append("event interpretation may be noisy; read the primary source")
+
+    if terminal:
+        bucket = "D"
+    elif score >= 70:
+        bucket = "A"
+    elif score >= 50:
+        bucket = "B"
+    elif score >= 30:
+        bucket = "C"
+    else:
+        bucket = "D"
+
+    thesis_parts = []
+    if price.drawdown_60d < -8:
+        thesis_parts.append(f"{price.drawdown_60d:.1f}% below its 60-day closing high")
+    if price.above_5d_low > 2:
+        thesis_parts.append(f"{price.above_5d_low:.1f}% above its 5-day low")
+    if category_counts:
+        thesis_parts.append("recent events: " + ", ".join(top_category_labels(category_counts)))
+    thesis = "; ".join(thesis_parts) or "event activity detected but signal is weak"
+    reasons = build_reasons(news, category_counts, price, negative_event_count, positive_event_count)
+    watchpoints = build_watchpoints(category_counts, price)
+
+    return Candidate(
+        ticker=ticker,
+        score=round(score, 2),
+        bucket=bucket,
+        thesis=thesis,
+        reasons=reasons,
+        risks=risks,
+        watchpoints=watchpoints,
+        score_breakdown=breakdown,
+        events=news,
+        price=price,
+    )
