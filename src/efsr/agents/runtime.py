@@ -4,15 +4,15 @@ import json
 import os
 import urllib.request
 
-from data_sources import fetch_recent_sec_filings, fetch_sec_company_facts
-from llm_prompts import (
+from efsr.sources import fetch_recent_sec_filings, fetch_sec_company_facts
+from efsr.prompts import (
     AGENT_TASK_SYSTEM_PROMPT,
     build_agent_task_prompt,
     build_llm_review_prompt,
     estimate_tokens,
 )
-from models import AgentPlan, AgentResult, AgentReview, AgentTask, Candidate, Evidence, ToolResult
-from scoring import count_categories, top_category_labels
+from efsr.models import AgentPlan, AgentResult, AgentReview, AgentTask, Candidate, Evidence, ToolResult
+from efsr.scoring import count_categories, top_category_labels
 
 
 def _log(message: str) -> None:
@@ -25,7 +25,7 @@ def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
 
 def _load_sec_ticker_map_safely() -> dict[str, str]:
     try:
-        from data_sources import load_sec_ticker_map
+        from efsr.sources import load_sec_ticker_map
 
         return load_sec_ticker_map()
     except Exception:

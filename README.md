@@ -50,10 +50,19 @@ The report includes:
 - A rationale section for each candidate
 - AI agent review notes, committee summaries, and tool traces when enabled
 
+## Install
+
+The project is a standard-library-only Python package. Install it (editable) to
+get the `efsr` package and the `efsr` / `efsr-email` console scripts on your path:
+
+```bash
+pip install -e .
+```
+
 ## Run
 
 ```bash
-python3 src/event_bottom_fishing.py
+python -m efsr          # equivalent to the `efsr` console script
 ```
 
 ## Agent Modes
@@ -76,7 +85,7 @@ After each report run, the project also updates a SQLite paper portfolio at `sta
 To run the full multi-agent version:
 
 ```bash
-OPENAI_API_KEY=... python3 src/event_bottom_fishing.py \
+OPENAI_API_KEY=... python -m efsr \
   --top 10 \
   --agent-mode full \
   --agent-review-count 3 \
@@ -118,13 +127,13 @@ That is the right tradeoff for a system whose output is a research report, not a
 Run it once per trading day before the US market open:
 
 ```bash
-python3 src/event_bottom_fishing.py --top 10
+python -m efsr --top 10
 ```
 
 To generate the report and email it from your own machine or any SMTP-enabled environment:
 
 ```bash
-python3 src/email_daily_report.py --to lvyongyu@gmail.com
+python -m efsr.email_report --to lvyongyu@gmail.com   # or: efsr-email --to ...
 ```
 
 Email settings are loaded from environment variables or a local `.env` file. Start from the example:

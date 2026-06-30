@@ -6,8 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from data_sources import fetch_price_stats
-from models import Candidate
+from efsr.sources import fetch_price_stats
+from efsr.models import Candidate
 
 
 DEFAULT_BUY_AMOUNT = 100.0

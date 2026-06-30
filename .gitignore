@@ -4,6 +4,10 @@ __pycache__/
 .DS_Store
 .env
 .cache/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
 state/*.sqlite-*
 outputs/*.json
 outputs/*.md

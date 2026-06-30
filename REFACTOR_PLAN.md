@@ -8,7 +8,7 @@
 > silent-divergence traps, and keeps the reserved agent committee as a real,
 > switchable implementation.
 >
-> Status: **implemented (Steps 1–5 complete)**. Net −865 lines of code;
+> Status: **implemented (Steps 1–6 complete)**. Net −865 lines of code;
 > `py_compile` + `pyflakes` clean across `src/`; `score_candidate` relocation is
 > field-for-field equivalent; default behavior (`--agent-impl runtime`) is
 > unchanged, so CI and the daily report are unaffected.
@@ -20,8 +20,14 @@
 >   orchestrator, wiring the reserved committee into a real switchable implementation (default runtime)
 > - ✅ Step 4 — converge `pct`/`multiple` into leaf module `formatting.py`;
 >   rename `reporting.event_label` → `event_display_label`; clean unused imports + dead local in `agent_runtime.py`
-> - ✅ Step 5 — offline smoke test `tests/smoke_offline.py` (single source of truth /
+> - ✅ Step 5 — offline smoke test `tests/test_smoke_offline.py` (single source of truth /
 >   pinned scores / both agent impls + serialization / routing)
+> - ✅ Step 6 — packaging to convention: `src/efsr/` package (layered, with an `agents/`
+>   subpackage), `pyproject.toml` (PEP 621 metadata + `efsr`/`efsr-email` console scripts),
+>   `python -m efsr` entry point, absolute `efsr.*` imports, CI/README updated, tests run via `pytest`.
+>   Module renames: `data_sources`→`sources`, `llm_prompts`→`prompts`, `paper_portfolio`→`portfolio`,
+>   `event_bottom_fishing`→`cli`, `email_daily_report`→`email_report`, `agent_runtime`→`agents.runtime`,
+>   `agent_review_legacy`→`agents.legacy`.
 > - ➕ Extra: fixed the `email_daily_report.py` SMTP entry point (extract
 >   `build_arg_parser`/`parse_args` to share one arg source; its hand-built
 >   `SimpleNamespace` had drifted — missing `scan_workers`/`skip_agent_review`/`agent_*` —

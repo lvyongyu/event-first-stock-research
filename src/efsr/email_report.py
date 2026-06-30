@@ -10,11 +10,11 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 
-import event_bottom_fishing
-from reporting import write_outputs
+from efsr import cli
+from efsr.reporting import write_outputs
 
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_ENV_PATH = os.path.join(ROOT, ".env")
 DEFAULT_TO = "lvyongyu@gmail.com"
 
@@ -39,17 +39,17 @@ def required_env(name: str) -> str:
 
 
 def generate_report(top: int, lookback_days: int, max_news: int) -> tuple[str, str]:
-    args = event_bottom_fishing.parse_args([])
+    args = cli.parse_args([])
     args.top = top
     args.lookback_days = lookback_days
     args.max_news = max_news
-    candidates = event_bottom_fishing.scan(args)
+    candidates = cli.scan(args)
     if not candidates:
         raise RuntimeError("No candidates found; check network access or widen the universe/lookback window.")
 
-    os.makedirs(event_bottom_fishing.OUTPUT_DIR, exist_ok=True)
+    os.makedirs(cli.OUTPUT_DIR, exist_ok=True)
     today = dt.datetime.now().strftime("%Y-%m-%d")
-    path_prefix = os.path.join(event_bottom_fishing.OUTPUT_DIR, f"daily_event_bottom_fishing_{today}")
+    path_prefix = os.path.join(cli.OUTPUT_DIR, f"daily_event_bottom_fishing_{today}")
     return write_outputs(candidates, path_prefix)
 
 

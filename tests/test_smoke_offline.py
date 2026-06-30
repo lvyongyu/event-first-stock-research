@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Offline smoke test for the event-first screener.
+"""Offline smoke test for the efsr package.
 
-No network, no API key, does not touch the paper portfolio DB. Run with:
+No network, no API key, does not touch the paper portfolio DB. Run with either:
 
-    python3 tests/smoke_offline.py
+    python3 tests/test_smoke_offline.py
+    pytest
 
-It guards the failure modes that matter after the modularization refactor:
-- "single source of truth" — the live pipeline uses scoring.py / formatting.py,
-  not a stale in-file duplicate (the silent-divergence trap);
+It guards the failure modes that matter after the modularization + packaging:
+- the package wires up (every submodule imports);
+- "single source of truth" — the CLI reuses scoring.py / formatting.py rather
+  than a stale duplicate (the silent-divergence trap);
 - deterministic scoring stays pinned (catches accidental weight changes);
 - both agent implementations run and serialize through reporting cleanly.
 """
 from __future__ import annotations
 
 import datetime as dt
+import importlib
 import json
 import os
 import sys
@@ -22,14 +25,18 @@ import tempfile
 SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 sys.path.insert(0, SRC)
 
-import event_bottom_fishing as ebf  # noqa: E402
-import formatting  # noqa: E402
-import llm_prompts  # noqa: E402
-import reporting  # noqa: E402
-import scoring  # noqa: E402
-from models import DataConfidence, FilingItem, FundamentalScore, NewsItem, PriceStats  # noqa: E402
+from efsr import cli, formatting, prompts, reporting, scoring  # noqa: E402
+from efsr.models import (  # noqa: E402
+    DataConfidence, FilingItem, FundamentalScore, NewsItem, PriceStats,
+)
 
 UTC = dt.timezone.utc
+
+PACKAGE_MODULES = [
+    "efsr", "efsr.cli", "efsr.email_report", "efsr.models", "efsr.formatting",
+    "efsr.sources", "efsr.scoring", "efsr.prompts", "efsr.reporting",
+    "efsr.portfolio", "efsr.agents", "efsr.agents.runtime", "efsr.agents.legacy",
+]
 
 
 def _news():
@@ -62,11 +69,17 @@ def _enriched_candidate():
     return c
 
 
+def test_package_imports():
+    # Every submodule imports — catches packaging / import-path breakage.
+    for name in PACKAGE_MODULES:
+        importlib.import_module(name)
+
+
 def test_single_source_of_truth():
-    # The live entry point must reuse the extracted modules, not a re-introduced duplicate.
-    assert ebf.score_candidate is scoring.score_candidate, "score_candidate diverged from scoring.py"
+    # The CLI must reuse the extracted modules, not a re-introduced duplicate.
+    assert cli.score_candidate is scoring.score_candidate, "score_candidate diverged from scoring"
     assert scoring.pct is formatting.pct, "scoring.pct is not the shared formatting.pct"
-    assert llm_prompts.multiple is formatting.multiple, "llm_prompts.multiple is not shared"
+    assert prompts.multiple is formatting.multiple, "prompts.multiple is not shared"
     assert reporting.pct is formatting.pct, "reporting.pct is not the shared formatting.pct"
 
 
@@ -83,37 +96,37 @@ def test_score_candidate_pinned():
     assert (term.score, term.bucket) == (35.5, "D"), (term.score, term.bucket)
 
 
-def test_both_agent_impls_offline_and_serialize():
-    for impl in ("legacy",):  # runtime fetches SEC data -> requires network; not run offline
-        c = _enriched_candidate()
-        args = ebf.parse_args(["--agent-impl", impl, "--agent-mode", "deterministic",
-                               "--agent-review-count", "1"])
-        ebf.apply_agent_reviews([c], args)
-        r = c.agent_review
-        assert r.decision in {"Focus", "Watch", "Pass", "Blocked"}, r.decision
-        assert 0.0 <= r.evidence_quality <= 1.0, r.evidence_quality
-        assert len(r.agent_results) == 7, len(r.agent_results)
+def test_legacy_agent_runs_and_serializes():
+    # runtime fetches SEC data (network) -> only the legacy impl is run offline.
+    c = _enriched_candidate()
+    args = cli.parse_args(["--agent-impl", "legacy", "--agent-mode", "deterministic",
+                           "--agent-review-count", "1"])
+    cli.apply_agent_reviews([c], args)
+    r = c.agent_review
+    assert r.decision in {"Focus", "Watch", "Pass", "Blocked"}, r.decision
+    assert 0.0 <= r.evidence_quality <= 1.0, r.evidence_quality
+    assert len(r.agent_results) == 7, len(r.agent_results)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            json_path, md_path = reporting.write_outputs([c], os.path.join(tmp, "report"))
-            assert os.path.exists(json_path) and os.path.exists(md_path)
-            payload = json.loads(open(json_path, encoding="utf-8").read())
-            assert payload["candidates"][0]["ticker"] == "ACME"
-            assert payload["candidates"][0]["agent_review"]["decision"] == r.decision
+    with tempfile.TemporaryDirectory() as tmp:
+        json_path, md_path = reporting.write_outputs([c], os.path.join(tmp, "report"))
+        assert os.path.exists(json_path) and os.path.exists(md_path)
+        payload = json.loads(open(json_path, encoding="utf-8").read())
+        assert payload["candidates"][0]["ticker"] == "ACME"
+        assert payload["candidates"][0]["agent_review"]["decision"] == r.decision
 
 
 def test_agent_impl_routing():
     seen = []
-    real_runtime, real_legacy = ebf.run_agent_reviews, ebf.apply_agent_reviews_legacy
-    ebf.run_agent_reviews = lambda c, **k: (seen.append("runtime"), c)[1]
-    ebf.apply_agent_reviews_legacy = lambda c, **k: (seen.append("legacy"), c)[1]
+    real_runtime, real_legacy = cli.run_agent_reviews, cli.apply_agent_reviews_legacy
+    cli.run_agent_reviews = lambda c, **k: (seen.append("runtime"), c)[1]
+    cli.apply_agent_reviews_legacy = lambda c, **k: (seen.append("legacy"), c)[1]
     try:
-        for argv, expect in (([], "runtime"), (["--agent-impl", "legacy"], "legacy"),
-                             (["--agent-impl", "runtime"], "runtime")):
-            ebf.apply_agent_reviews([], ebf.parse_args(argv))
+        for argv, _ in (([], "runtime"), (["--agent-impl", "legacy"], "legacy"),
+                        (["--agent-impl", "runtime"], "runtime")):
+            cli.apply_agent_reviews([], cli.parse_args(argv))
         assert seen == ["runtime", "legacy", "runtime"], seen
     finally:
-        ebf.run_agent_reviews, ebf.apply_agent_reviews_legacy = real_runtime, real_legacy
+        cli.run_agent_reviews, cli.apply_agent_reviews_legacy = real_runtime, real_legacy
 
 
 def main() -> int:

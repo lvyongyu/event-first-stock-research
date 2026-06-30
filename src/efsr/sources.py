@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from models import FilingItem, NewsItem, PriceStats
+from efsr.models import FilingItem, NewsItem, PriceStats
 
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -22,7 +22,7 @@ SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.jso
 SEC_USER_AGENT = "auto-trading-research/0.1 lvyongyu@gmail.com"
 SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 LIVE_UNIVERSE_SPEC = {"sp500-live", "live-sp500", "sp500"}
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = ROOT / ".cache" / "event-first"
 CACHE_TTL_DAYS = 7
 
