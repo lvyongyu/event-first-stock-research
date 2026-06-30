@@ -14,14 +14,14 @@ import json
 import os
 import urllib.request
 
-from llm_prompts import (
+from efsr.prompts import (
     OPENAI_REVIEW_SYSTEM_PROMPT,
     build_llm_review_prompt,
     compact_text,
     estimate_tokens,
 )
-from models import AgentResult, AgentReview, Candidate, Evidence
-from scoring import count_categories, top_category_labels
+from efsr.models import AgentResult, AgentReview, Candidate, Evidence
+from efsr.scoring import count_categories, top_category_labels
 
 
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:

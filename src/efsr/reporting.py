@@ -4,8 +4,8 @@ import dataclasses
 import datetime as dt
 import json
 
-from formatting import multiple, pct
-from models import Candidate
+from efsr.formatting import multiple, pct
+from efsr.models import Candidate
 
 
 def candidate_to_dict(candidate: Candidate) -> dict:

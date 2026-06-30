@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from data_sources import (
+from efsr.sources import (
     fetch_recent_sec_filings,
     fetch_sec_company_facts,
     fetch_stooq_price_stats,
@@ -9,8 +9,8 @@ from data_sources import (
     latest_two_annual_values,
     latest_value,
 )
-from formatting import multiple, pct
-from models import Candidate, DataConfidence, FundamentalScore, NewsItem, PriceStats
+from efsr.formatting import multiple, pct
+from efsr.models import Candidate, DataConfidence, FundamentalScore, NewsItem, PriceStats
 
 
 def add_score(breakdown: dict[str, float], label: str, value: float) -> None:

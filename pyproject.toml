@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "efsr"
+version = "0.1.0"
+description = "Event-first US stock bottom-fishing research engine"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "lvyongyu", email = "lvyongyu@gmail.com" }]
+keywords = ["stocks", "research", "event-driven", "screener", "sec"]
+dependencies = []  # standard library only
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+efsr = "efsr.cli:main"
+efsr-email = "efsr.email_report:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -39,8 +39,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install package
+        run: python3 -m pip install -e .
+
       - name: Generate watchlist
-        run: python3 -u src/event_bottom_fishing.py --top 10
+        run: python3 -u -m efsr --top 10
 
       - name: Commit paper portfolio database
         run: |

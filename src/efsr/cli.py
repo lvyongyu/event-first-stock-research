@@ -22,24 +22,24 @@ import os
 import sys
 from typing import Iterable
 
-from agent_review_legacy import apply_agent_reviews_legacy
-from agent_runtime import apply_agent_reviews as run_agent_reviews
-from data_sources import (
+from efsr.agents.legacy import apply_agent_reviews_legacy
+from efsr.agents.runtime import apply_agent_reviews as run_agent_reviews
+from efsr.sources import (
     fetch_news,
     fetch_price_stats,
     load_aliases as load_aliases_source,
     load_universe as load_universe_source,
 )
-from models import Candidate
-from paper_portfolio import (
+from efsr.models import Candidate
+from efsr.portfolio import (
     apply_paper_buy,
     append_paper_buy_to_outputs,
     append_performance_to_outputs,
     archive_report,
     update_portfolio_performance,
 )
-from reporting import write_outputs as render_outputs
-from scoring import (
+from efsr.reporting import write_outputs as render_outputs
+from efsr.scoring import (
     apply_data_confidence,
     apply_deep_dive,
     apply_fundamental_scores,
@@ -48,7 +48,7 @@ from scoring import (
 )
 
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_UNIVERSE = "sp500-live"
 DEFAULT_ALIASES = "auto"
 DEFAULT_UNIVERSE_FALLBACK = os.path.join(ROOT, "config", "universe_sp100.txt")

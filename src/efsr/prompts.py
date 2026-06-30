@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from formatting import multiple, pct
+from efsr.formatting import multiple, pct
 
 
 OPENAI_REVIEW_SYSTEM_PROMPT = (
