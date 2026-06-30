@@ -132,6 +132,7 @@ def scan(args: argparse.Namespace) -> list[Candidate]:
     tickers = load_universe(args.universe)
     aliases_by_ticker = load_aliases(args.aliases, universe=tickers)
     candidates = []
+    errors = 0
     max_workers = max(1, args.scan_workers)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
@@ -142,10 +143,16 @@ def scan(args: argparse.Namespace) -> list[Candidate]:
             index, candidate, error = future.result()
             ticker = tickers[index - 1]
             if error:
+                errors += 1
                 logger.debug("[%d/%d] %s: skipped (%s)", index, len(tickers), ticker, error)
             if candidate:
                 candidates.append(candidate)
                 logger.debug("[%d/%d] %s: %.2f", index, len(tickers), ticker, candidate.score)
+    # Distinguish "quiet market" from "upstream broken": a high error rate means the
+    # data sources likely failed rather than there being no event-driven names today.
+    log = logger.warning if errors > len(tickers) // 2 else logger.info
+    log("scan complete: %d/%d tickers yielded candidates, %d fetch errors",
+        len(candidates), len(tickers), errors)
     candidates.sort(key=lambda item: item.score, reverse=True)
     return prepare_selected_candidates(candidates, args)
 

@@ -7,7 +7,6 @@ weight or threshold change can't drift silently.
 """
 from __future__ import annotations
 
-import datetime as dt
 import os
 import sys
 
