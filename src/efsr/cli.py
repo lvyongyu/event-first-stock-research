@@ -296,6 +296,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         performance_result["open_positions"], performance_result["total_value"],
         performance_result["total_unrealized_pnl"], performance_result["total_return_pct"],
     )
+    for stop in performance_result.get("stopped_this_run", []):
+        logger.info(
+            "[paper] stopped out %s via %s at $%.2f (%.2f%%, realized $%.2f); it will not be re-bought",
+            stop["ticker"], stop["exit_reason"], stop["exit_price"],
+            stop["return_pct"], stop["realized_pnl"],
+        )
     archive_result = archive_report(
         args.paper_portfolio_db,
         run_date=today,

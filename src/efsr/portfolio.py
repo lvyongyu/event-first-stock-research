@@ -15,6 +15,47 @@ logger = logging.getLogger(__name__)
 DEFAULT_BUY_AMOUNT = 100.0
 BENCHMARK_TICKER = "SPY"
 
+# Exit discipline (staged stop-loss). Before a position proves itself we give it a
+# fixed downside stop; once it has run far enough into profit we switch to a
+# trailing stop so winners keep running while gains are protected. A position that
+# gets stopped out is closed (status='stopped') and, because held_tickers() keeps
+# returning it, is never re-bought.
+HARD_STOP_PCT = 0.10        # fixed stop: exit if price falls this far below entry
+TRAIL_STOP_PCT = 0.10       # trailing stop: exit if price falls this far below the peak
+TRAIL_ACTIVATE_PCT = 0.10   # trailing stop only arms after price is this far above entry
+
+
+def evaluate_stop(
+    entry_price: float,
+    current_price: float,
+    high_price: float,
+    activated: bool,
+    *,
+    hard: float = HARD_STOP_PCT,
+    trail: float = TRAIL_STOP_PCT,
+    activate: float = TRAIL_ACTIVATE_PCT,
+) -> dict[str, Any]:
+    """Pure staged-stop decision for one position on one mark.
+
+    Returns the updated peak, whether the trailing stop is armed, the active stop
+    level, whether the position should be exited, and the exit reason. No I/O so it
+    is unit-testable in isolation.
+    """
+    high = max(high_price, current_price)
+    activated = bool(activated) or current_price >= entry_price * (1 + activate)
+    stop_level = high * (1 - trail) if activated else entry_price * (1 - hard)
+    triggered = current_price <= stop_level
+    reason = None
+    if triggered:
+        reason = "trailing_stop" if activated else "hard_stop"
+    return {
+        "high_price": high,
+        "activated": activated,
+        "stop_level": stop_level,
+        "triggered": triggered,
+        "reason": reason,
+    }
+
 
 def _close_on_or_before(history: dict[str, float], date_iso: str) -> float | None:
     """Latest close at or before date_iso (handles weekends/holidays)."""
@@ -86,7 +127,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             evidence_quality REAL NOT NULL,
             thesis TEXT NOT NULL,
             main_risk TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'open'
+            status TEXT NOT NULL DEFAULT 'open',
+            high_price REAL,
+            stop_activated INTEGER NOT NULL DEFAULT 0,
+            exit_date TEXT,
+            exit_price REAL,
+            exit_reason TEXT,
+            realized_pnl REAL
         )
         """
     )
@@ -139,10 +186,51 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    _migrate_positions(conn)
     conn.commit()
 
 
+def _migrate_positions(conn: sqlite3.Connection) -> None:
+    """Add stop-loss columns to a pre-existing positions table and backfill them.
+
+    Older databases were created before staged stops existed. We add the missing
+    columns and seed high_price from the recorded snapshot history so the trailing
+    stop remembers each position's peak rather than resetting it to the entry price.
+    """
+    existing = {str(row["name"]) for row in conn.execute("PRAGMA table_info(positions)").fetchall()}
+    additions = {
+        "high_price": "REAL",
+        "stop_activated": "INTEGER NOT NULL DEFAULT 0",
+        "exit_date": "TEXT",
+        "exit_price": "REAL",
+        "exit_reason": "TEXT",
+        "realized_pnl": "REAL",
+    }
+    added = False
+    for column, ddl in additions.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE positions ADD COLUMN {column} {ddl}")
+            added = True
+    if not added:
+        return
+    # Backfill high_price = max(entry, highest observed close); arm the trailing stop
+    # for any position that already ran past the activation threshold.
+    for row in conn.execute("SELECT id, ticker, price FROM positions WHERE high_price IS NULL").fetchall():
+        entry = float(row["price"])
+        peak_row = conn.execute(
+            "SELECT MAX(current_price) AS peak FROM position_snapshots WHERE ticker = ?",
+            (str(row["ticker"]),),
+        ).fetchone()
+        peak = max(entry, float(peak_row["peak"])) if peak_row and peak_row["peak"] is not None else entry
+        conn.execute(
+            "UPDATE positions SET high_price = ?, stop_activated = ? WHERE id = ?",
+            (peak, 1 if peak >= entry * (1 + TRAIL_ACTIVATE_PCT) else 0, row["id"]),
+        )
+
+
 def held_tickers(conn: sqlite3.Connection) -> set[str]:
+    """Every ticker ever taken, in any status. Stopped-out names stay in this set by
+    design, so select_paper_buy_candidate never re-buys a position we already cut."""
     rows = conn.execute("SELECT ticker FROM positions").fetchall()
     return {str(row["ticker"]).upper() for row in rows}
 
@@ -236,6 +324,8 @@ def build_position(candidate: Candidate, buy_amount: float, run_date: str) -> di
         "thesis": thesis,
         "main_risk": main_risk,
         "status": "open",
+        "high_price": round(price, 4),
+        "stop_activated": 0,
     }
 
 
@@ -246,13 +336,15 @@ def insert_position(conn: sqlite3.Connection, position: dict[str, Any]) -> None:
             ticker, buy_date, created_at, notional, price, shares,
             agent_decision, agent_review_score, agent_risk,
             deep_dive_decision, deep_dive_score, original_score,
-            evidence_quality, thesis, main_risk, status
+            evidence_quality, thesis, main_risk, status,
+            high_price, stop_activated
         )
         VALUES (
             :ticker, :buy_date, :created_at, :notional, :price, :shares,
             :agent_decision, :agent_review_score, :agent_risk,
             :deep_dive_decision, :deep_dive_score, :original_score,
-            :evidence_quality, :thesis, :main_risk, :status
+            :evidence_quality, :thesis, :main_risk, :status,
+            :high_price, :stop_activated
         )
         """,
         position,
@@ -330,10 +422,12 @@ def update_portfolio_performance(db_path: str, candidates: list[Candidate], run_
     run_day = _parse_date(run_date)
     latest_prices = _candidate_price_map(candidates)
     snapshots: list[dict[str, Any]] = []
+    stopped: list[dict[str, Any]] = []
     with connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT ticker, buy_date, notional, price, shares, status
+            SELECT ticker, buy_date, notional, price, shares, status,
+                   high_price, stop_activated
             FROM positions
             WHERE status = 'open'
             ORDER BY buy_date, ticker
@@ -357,10 +451,48 @@ def update_portfolio_performance(db_path: str, candidates: list[Candidate], run_
             notional = float(row["notional"])
             entry_price = float(row["price"])
             shares = float(row["shares"])
+
+            # Staged stop-loss: update the peak, decide whether this mark exits.
+            prior_high = float(row["high_price"]) if row["high_price"] is not None else entry_price
+            stop = evaluate_stop(
+                entry_price, current_price, prior_high, bool(row["stop_activated"])
+            )
+            status = "stopped" if stop["triggered"] else "open"
+
             market_value = shares * current_price
             unrealized_pnl = market_value - notional
             return_pct = (current_price / entry_price - 1) * 100 if entry_price else 0
             holding_days = max(0, (run_day - _parse_date(str(row["buy_date"]))).days)
+
+            # Persist the trailing peak / activation, and close the position on a stop.
+            if stop["triggered"]:
+                conn.execute(
+                    """
+                    UPDATE positions SET
+                        status = 'stopped', high_price = ?, stop_activated = ?,
+                        exit_date = ?, exit_price = ?, exit_reason = ?, realized_pnl = ?
+                    WHERE ticker = ?
+                    """,
+                    (
+                        stop["high_price"], 1 if stop["activated"] else 0,
+                        run_date, round(current_price, 4), stop["reason"],
+                        round(unrealized_pnl, 2), str(row["ticker"]),
+                    ),
+                )
+                stopped.append({
+                    "ticker": ticker,
+                    "exit_reason": stop["reason"],
+                    "exit_price": round(current_price, 4),
+                    "entry_price": round(entry_price, 4),
+                    "return_pct": round(return_pct, 2),
+                    "realized_pnl": round(unrealized_pnl, 2),
+                })
+            else:
+                conn.execute(
+                    "UPDATE positions SET high_price = ?, stop_activated = ? WHERE ticker = ?",
+                    (stop["high_price"], 1 if stop["activated"] else 0, str(row["ticker"])),
+                )
+
             snapshot = {
                 "run_date": run_date,
                 "created_at": _now_utc(),
@@ -374,10 +506,11 @@ def update_portfolio_performance(db_path: str, candidates: list[Candidate], run_
                 "market_value": round(market_value, 2),
                 "unrealized_pnl": round(unrealized_pnl, 2),
                 "return_pct": round(return_pct, 2),
-                "status": str(row["status"]),
+                "status": status,
                 "price_source": source,
             }
-            snapshots.append(snapshot)
+            if status == "open":
+                snapshots.append(snapshot)
             conn.execute(
                 """
                 INSERT INTO position_snapshots (
@@ -402,6 +535,12 @@ def update_portfolio_performance(db_path: str, candidates: list[Candidate], run_
                 snapshot,
             )
         conn.commit()
+        realized_row = conn.execute(
+            "SELECT COALESCE(SUM(realized_pnl), 0) AS realized, COUNT(*) AS closed "
+            "FROM positions WHERE status = 'stopped'"
+        ).fetchone()
+        realized_pnl_total = round(float(realized_row["realized"] or 0), 2)
+        closed_positions = int(realized_row["closed"] or 0)
 
     total_cost = sum(float(item["notional"]) for item in snapshots)
     total_value = sum(float(item["market_value"]) for item in snapshots)
@@ -436,6 +575,9 @@ def update_portfolio_performance(db_path: str, candidates: list[Candidate], run_
         "win_rate_pct": round(win_rate_pct, 2),
         "benchmark": benchmark,
         "excess_return_pct": excess_return_pct,
+        "stopped_this_run": stopped,
+        "closed_positions": closed_positions,
+        "realized_pnl_total": realized_pnl_total,
     }
 
 
@@ -486,6 +628,22 @@ def append_performance_to_outputs(markdown_path: str, json_path: str, result: di
             f"- Winners / losers: {result.get('winners', 0)} / {result.get('losers', 0)} "
             f"(win rate {float(result.get('win_rate_pct', 0)):.1f}%)\n"
         )
+        closed = int(result.get("closed_positions", 0))
+        if closed:
+            handle.write(
+                f"- Realized (stopped-out) P/L: ${float(result.get('realized_pnl_total', 0)):.2f} "
+                f"across {closed} closed position(s)\n"
+            )
+        stopped_now = result.get("stopped_this_run") or []
+        if stopped_now:
+            handle.write(
+                "- Stopped out this run: "
+                + ", ".join(
+                    f"{s['ticker']} ({s['exit_reason']}, {float(s['return_pct']):.1f}%)"
+                    for s in stopped_now
+                )
+                + "\n"
+            )
         benchmark = result.get("benchmark")
         if benchmark:
             excess = result.get("excess_return_pct")
